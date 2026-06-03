@@ -1,6 +1,6 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
-import { ExternalLink, Printer, Download, Shield, AlertTriangle, Globe, Server, Lock, User, Clock, Zap, Phone, MessageCircle, Map, GitBranch, Code, Brain, ChevronDown, ChevronUp, SendHorizontal, Mail, Copy, Eye, ShieldAlert } from 'lucide-react';
+import { ExternalLink, Printer, Download, Shield, AlertTriangle, Globe, Server, Lock, User, Clock, Zap, Phone, MessageCircle, Map, GitBranch, Code, Brain, ChevronDown, ChevronUp, SendHorizontal, Mail, Copy, Eye, ShieldAlert, ArrowUp } from 'lucide-react';
 import type { ScanResults, ScanMeta, OpsecFinding } from '@/lib/types';
 import { fetchReportBlob, generateAiSummary, sendAiChat, getMapData, getGraphData } from '@/lib/api';
 import { useTranslations } from '@/lib/i18n';
@@ -312,9 +312,11 @@ export function ScanResults({ scan }: Props) {
   const [chatHistory, setChatHistory] = useState<{role:'user'|'ai'; text:string}[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
   const [showJson, setShowJson] = useState(false);
+  const [showBackToTop, setShowBackToTop] = useState(false);
   const [copyToast, setCopyToast] = useState('');
   const [reportLoading, setReportLoading] = useState<'html' | 'pdf' | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
   const r = scan.results;
   const opsec = r.opsec;
 
@@ -337,6 +339,15 @@ export function ScanResults({ scan }: Props) {
 
   useEffect(() => () => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    const host = contentRef.current;
+    if (!host) return;
+    const onScroll = () => setShowBackToTop(host.scrollTop > 300);
+    onScroll();
+    host.addEventListener('scroll', onScroll, { passive: true });
+    return () => host.removeEventListener('scroll', onScroll as EventListener);
   }, []);
 
   const sendChat = async () => {
@@ -493,7 +504,7 @@ export function ScanResults({ scan }: Props) {
         ))}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-5">
+      <div ref={contentRef} className={`flex-1 overflow-y-auto p-5 ${showBackToTop ? 'pb-24' : ''}`}>
 
         {tab === 'findings' && (
           <div>
@@ -1018,8 +1029,30 @@ export function ScanResults({ scan }: Props) {
           </div>
         )}
       </div>
+      {showBackToTop && (
+        <div className="fixed bottom-8 right-8 z-50 group">
+          <button
+            type="button"
+            onClick={() => {
+              const el = contentRef.current;
+              if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
+              else window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            aria-label="Back to top"
+            title="Back to top"
+            className="flex items-center justify-center w-12 h-12 rounded-full bg-blue hover:bg-blue/90 text-white shadow-lg hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-blue/50 focus:ring-offset-2 focus:ring-offset-surface-1 transition-all duration-200 hover:scale-110 active:scale-95"
+          >
+            <ArrowUp size={20} strokeWidth={2.5} />
+            <span className="sr-only">Back to top</span>
+          </button>
+          <div className="absolute -top-12 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none whitespace-nowrap">
+            <div className="px-3 py-1.5 rounded-md bg-surface-1 border border-border-1 text-[11px] font-semibold text-text-1 shadow-lg">Back to top</div>
+          </div>
+        </div>
+      )}
+
       {copyToast && (
-        <div className="fixed bottom-4 right-4 z-[70] px-3 py-1.5 rounded border border-border-1 bg-surface-2 text-[11px] font-semibold text-text-1 shadow-xl">
+        <div className={`fixed ${showBackToTop ? 'bottom-20' : 'bottom-4'} right-4 z-[70] px-3 py-1.5 rounded border border-border-1 bg-surface-2 text-[11px] font-semibold text-text-1 shadow-xl`}>
           {copyToast}
         </div>
       )}
