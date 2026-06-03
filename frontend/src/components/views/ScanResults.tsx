@@ -224,13 +224,82 @@ function DtRow({ label, value }: { label: string; value?: string | number | null
   );
 }
 
-function Card({ title, children }: { title?: string; children: React.ReactNode }) {
+function Card({ title, extra, children }: { title?: string; extra?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="card mb-3">
-      {title && <div className="card-head">{title}</div>}
+      {title && (
+        <div className="card-head flex items-center justify-between gap-2">
+          <span>{title}</span>
+          {extra}
+        </div>
+      )}
       <div className="p-4">{children}</div>
     </div>
   );
+}
+
+type ModStatus = 'ok' | 'skipped' | 'rate_limited' | 'error';
+
+/** Derive the standard status from a module result (honours explicit status). */
+function modStatus(m?: { status?: string; error?: string | null } | null): ModStatus {
+  if (!m) return 'ok';
+  if (m.status === 'skipped' || m.status === 'rate_limited' || m.status === 'error') return m.status;
+  if (m.error) return 'error';
+  return 'ok';
+}
+
+const STATUS_BADGE: Record<Exclude<ModStatus, 'ok'>, { label: string; color: string; hint: string }> = {
+  skipped: { label: 'SKIPPED', color: '#8b949e', hint: 'No API key configured' },
+  rate_limited: { label: 'RATE LIMITED', color: '#d29922', hint: 'Provider rate limit reached' },
+  error: { label: 'ERROR', color: '#f85149', hint: 'Module failed' },
+};
+
+function ModuleStatusBadge({ status, label }: { status: ModStatus; label?: string }) {
+  if (status === 'ok') return null;
+  const b = STATUS_BADGE[status];
+  return (
+    <span
+      className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border"
+      style={{ color: b.color, borderColor: `${b.color}55`, background: `${b.color}11` }}
+    >
+      {label ?? b.label}
+    </span>
+  );
+}
+
+function ModuleNotice({ status, reason }: { status: 'skipped' | 'rate_limited'; reason?: string }) {
+  const b = STATUS_BADGE[status];
+  return (
+    <div className="text-[12px]" style={{ color: status === 'rate_limited' ? b.color : undefined }}>
+      <span className="text-text-2">{reason || b.hint}</span>
+      {status === 'skipped' && (
+        <span className="text-text-3"> — add the key to <code className="font-mono">.env</code> to enable this module.</span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Render a card for a key-dependent module: the data when it ran OK, a clear
+ * "skipped"/"rate limited" notice when it degraded gracefully, and nothing on
+ * a hard error (kept hidden as before).
+ */
+function KeyModuleCard({ title, mod, children }: {
+  title: string;
+  mod?: { status?: string; error?: string | null; status_reason?: string } | null;
+  children: React.ReactNode;
+}) {
+  if (!mod) return null;
+  const st = modStatus(mod);
+  if (st === 'ok') return <Card title={title}>{children}</Card>;
+  if (st === 'skipped' || st === 'rate_limited') {
+    return (
+      <Card title={title} extra={<ModuleStatusBadge status={st} />}>
+        <ModuleNotice status={st} reason={mod.status_reason} />
+      </Card>
+    );
+  }
+  return null;
 }
 
 function CopyIconButton({ onClick, label }: { onClick: () => void; label: string }) {
@@ -559,8 +628,8 @@ export function ScanResults({ scan }: Props) {
     if (t.id === 'dns') return r.dns?.records && Object.keys(r.dns.records).length > 0;
     if (t.id === 'subdomains') return r.cert_transparency?.subdomains?.length;
     if (t.id === 'accounts') return r.blackbird?.some(b => b.status === 'found');
-    if (t.id === 'threats') return r.virustotal || r.abuseipdb || r.shodan;
-    if (t.id === 'censys') return r.censys && !r.censys.error;
+    if (t.id === 'threats') return [r.virustotal, r.abuseipdb, r.shodan].some(m => m && modStatus(m) !== 'error');
+    if (t.id === 'censys') return r.censys && modStatus(r.censys) !== 'error';
     if (t.id === 'darkweb') return r.onion && !r.onion.error && (r.onion.total_found ?? 0) > 0;
     if (t.id === 'wayback') return r.wayback;
     if (t.id === 'email') return r.emailrep || r.smtp || r.breaches;
@@ -799,68 +868,62 @@ export function ScanResults({ scan }: Props) {
 
         {tab === 'threats' && (
           <div>
-            {r.virustotal && !r.virustotal.error && (
-              <Card title="VirusTotal">
-                <div className="grid grid-cols-2 sm:flex sm:gap-6 mb-4 gap-3">
-                  {[['Malicious', r.virustotal.malicious, '#f85149'], ['Suspicious', r.virustotal.suspicious, '#d29922'], ['Harmless', r.virustotal.harmless, '#3fb950'], ['Undetected', r.virustotal.undetected, '#484f58']].map(([l, v, c]) => (
-                    <div key={String(l)} className="text-center">
-                      <div className="text-2xl font-black" style={{ color: String(c) }}>{v}</div>
-                      <div className="text-[10px] text-text-3">{l}</div>
-                    </div>
+            <KeyModuleCard title="VirusTotal" mod={r.virustotal}>
+              <div className="grid grid-cols-2 sm:flex sm:gap-6 mb-4 gap-3">
+                {[['Malicious', r.virustotal?.malicious, '#f85149'], ['Suspicious', r.virustotal?.suspicious, '#d29922'], ['Harmless', r.virustotal?.harmless, '#3fb950'], ['Undetected', r.virustotal?.undetected, '#484f58']].map(([l, v, c]) => (
+                  <div key={String(l)} className="text-center">
+                    <div className="text-2xl font-black" style={{ color: String(c) }}>{v}</div>
+                    <div className="text-[10px] text-text-3">{l}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="space-y-1.5">
+                <DtRow label="Country" value={r.virustotal?.country} />
+                <DtRow label="ASN" value={r.virustotal?.as_owner} />
+              </div>
+            </KeyModuleCard>
+            <KeyModuleCard title="AbuseIPDB" mod={r.abuseipdb}>
+              <div className="space-y-1.5">
+                <div className="dt-row"><span className="dt-label">Abuse Score</span>
+                  <span className="font-black" style={{ color: (r.abuseipdb?.abuse_score ?? 0) >= 50 ? '#f85149' : (r.abuseipdb?.abuse_score ?? 0) >= 10 ? '#d29922' : '#3fb950' }}>
+                    {r.abuseipdb?.abuse_score}/100
+                  </span>
+                </div>
+                <DtRow label="Total Reports" value={r.abuseipdb?.total_reports} />
+                <DtRow label="ISP" value={r.abuseipdb?.isp} />
+                <DtRow label="Usage Type" value={r.abuseipdb?.usage_type} />
+                {r.abuseipdb?.is_tor && <div className="text-red text-[12px] font-semibold mt-1">⚠ TOR Exit Node</div>}
+              </div>
+            </KeyModuleCard>
+            <KeyModuleCard title="Shodan" mod={r.shodan}>
+              {r.shodan?.open_ports?.length ? (
+                <div className="mb-3">
+                  <div className="text-[10px] text-text-3 uppercase tracking-wider mb-2">Open Ports</div>
+                  {r.shodan.open_ports.map(p => (
+                    <span key={p} className="inline-flex items-center gap-1 mr-1">
+                      <span className={`tag ${[21,22,23,3389,5900,445,3306,5432,27017,6379].includes(p) ? 'tag-red' : ''}`}>{p}</span>
+                      <CopyIconButton onClick={() => copyValue(p)} label="Copy Shodan port" />
+                    </span>
                   ))}
                 </div>
-                <div className="space-y-1.5">
-                  <DtRow label="Country" value={r.virustotal.country} />
-                  <DtRow label="ASN" value={r.virustotal.as_owner} />
+              ) : null}
+              {r.shodan?.vulns?.length ? (
+                <div className="mb-3">
+                  <div className="text-[10px] text-text-3 uppercase tracking-wider mb-2 text-red">CVEs Found</div>
+                  {r.shodan.vulns.map(v => <span key={v} className="tag tag-red">{v}</span>)}
                 </div>
-              </Card>
-            )}
-            {r.abuseipdb && !r.abuseipdb.error && (
-              <Card title="AbuseIPDB">
-                <div className="space-y-1.5">
-                  <div className="dt-row"><span className="dt-label">Abuse Score</span>
-                    <span className="font-black" style={{ color: (r.abuseipdb.abuse_score ?? 0) >= 50 ? '#f85149' : (r.abuseipdb.abuse_score ?? 0) >= 10 ? '#d29922' : '#3fb950' }}>
-                      {r.abuseipdb.abuse_score}/100
-                    </span>
-                  </div>
-                  <DtRow label="Total Reports" value={r.abuseipdb.total_reports} />
-                  <DtRow label="ISP" value={r.abuseipdb.isp} />
-                  <DtRow label="Usage Type" value={r.abuseipdb.usage_type} />
-                  {r.abuseipdb.is_tor && <div className="text-red text-[12px] font-semibold mt-1">⚠ TOR Exit Node</div>}
-                </div>
-              </Card>
-            )}
-            {r.shodan && !r.shodan.error && (
-              <Card title="Shodan">
-                {r.shodan.open_ports?.length && (
-                  <div className="mb-3">
-                    <div className="text-[10px] text-text-3 uppercase tracking-wider mb-2">Open Ports</div>
-                    {r.shodan.open_ports.map(p => (
-                      <span key={p} className="inline-flex items-center gap-1 mr-1">
-                        <span className={`tag ${[21,22,23,3389,5900,445,3306,5432,27017,6379].includes(p) ? 'tag-red' : ''}`}>{p}</span>
-                        <CopyIconButton onClick={() => copyValue(p)} label="Copy Shodan port" />
-                      </span>
-                    ))}
-                  </div>
-                )}
-                {r.shodan.vulns?.length && (
-                  <div className="mb-3">
-                    <div className="text-[10px] text-text-3 uppercase tracking-wider mb-2 text-red">CVEs Found</div>
-                    {r.shodan.vulns.map(v => <span key={v} className="tag tag-red">{v}</span>)}
-                  </div>
-                )}
-              </Card>
-            )}
+              ) : null}
+            </KeyModuleCard>
           </div>
         )}
 
-        {tab === 'censys' && r.censys && !r.censys.error && (
-          <Card title={`Censys — ${r.censys.domain ? 'Certificate Search' : 'Host Info'}`}>
+        {tab === 'censys' && (
+          <KeyModuleCard title={`Censys — ${r.censys?.domain ? 'Certificate Search' : 'Host Info'}`} mod={r.censys}>
             <div className="space-y-1.5">
-              {r.censys.ip && <div className="dt-row"><span className="dt-label">IP</span><span className="dt-value">{r.censys.ip}</span></div>}
-              {r.censys.asn && <div className="dt-row"><span className="dt-label">ASN</span><span className="dt-value">AS{r.censys.asn} {r.censys.as_name ?? ''}</span></div>}
-              {r.censys.country && <div className="dt-row"><span className="dt-label">Location</span><span className="dt-value">{[r.censys.city, r.censys.country].filter(Boolean).join(', ')}</span></div>}
-              {r.censys.open_ports && r.censys.open_ports.length > 0 && (
+              {r.censys?.ip && <div className="dt-row"><span className="dt-label">IP</span><span className="dt-value">{r.censys.ip}</span></div>}
+              {r.censys?.asn && <div className="dt-row"><span className="dt-label">ASN</span><span className="dt-value">AS{r.censys.asn} {r.censys.as_name ?? ''}</span></div>}
+              {r.censys?.country && <div className="dt-row"><span className="dt-label">Location</span><span className="dt-value">{[r.censys.city, r.censys.country].filter(Boolean).join(', ')}</span></div>}
+              {r.censys?.open_ports && r.censys.open_ports.length > 0 && (
                 <div className="dt-row"><span className="dt-label">Open Ports</span>
                   <div className="flex flex-wrap gap-1">
                     {r.censys.open_ports.map(p => (
@@ -872,7 +935,7 @@ export function ScanResults({ scan }: Props) {
                   </div>
                 </div>
               )}
-              {r.censys.subdomains && r.censys.subdomains.length > 0 && (
+              {r.censys?.subdomains && r.censys.subdomains.length > 0 && (
                 <div className="dt-row"><span className="dt-label">Subdomains ({r.censys.subdomains.length})</span>
                   <div className="flex flex-wrap gap-1">
                     {r.censys.subdomains.map(s => (
@@ -884,7 +947,7 @@ export function ScanResults({ scan }: Props) {
                   </div>
                 </div>
               )}
-              {r.censys.services && r.censys.services.length > 0 && (
+              {r.censys?.services && r.censys.services.length > 0 && (
                 <div className="mt-3">
                   <div className="text-[10px] text-text-3 uppercase tracking-wider mb-2">Services</div>
                   <table className="w-full text-[12px]">
@@ -902,7 +965,7 @@ export function ScanResults({ scan }: Props) {
                 </div>
               )}
             </div>
-          </Card>
+          </KeyModuleCard>
         )}
 
         {tab === 'darkweb' && r.onion && (
@@ -1030,28 +1093,26 @@ export function ScanResults({ scan }: Props) {
                 </div>
               </Card>
             )}
-            {r.breaches && !r.breaches.error && (
-              <Card title="Breach Check">
-                <div className="space-y-1.5">
-                  {r.breaches.found !== undefined && (
-                    <div className="dt-row"><span className="dt-label">Breaches Found</span>
-                      <span className={r.breaches.found ? 'text-red font-bold' : 'text-green'}>{r.breaches.found ? 'Yes' : 'No'}</span>
+            <KeyModuleCard title="Breach Check" mod={r.breaches}>
+              <div className="space-y-1.5">
+                {r.breaches?.found !== undefined && (
+                  <div className="dt-row"><span className="dt-label">Breaches Found</span>
+                    <span className={r.breaches?.found ? 'text-red font-bold' : 'text-green'}>{r.breaches?.found ? 'Yes' : 'No'}</span>
+                  </div>
+                )}
+                {(r.breaches?.breaches?.length ?? 0) > 0 && (
+                  <div className="mt-2">
+                    <div className="text-[10px] text-text-3 uppercase tracking-wider mb-2">Breached Services</div>
+                    <div className="flex flex-wrap gap-1">
+                      {r.breaches?.breaches?.map((b: any, i: number) => (
+                        <span key={i} className="tag tag-red">{typeof b === 'string' ? b : b.name || b.title || JSON.stringify(b)}</span>
+                      ))}
                     </div>
-                  )}
-                  {(r.breaches.breaches?.length ?? 0) > 0 && (
-                    <div className="mt-2">
-                      <div className="text-[10px] text-text-3 uppercase tracking-wider mb-2">Breached Services</div>
-                      <div className="flex flex-wrap gap-1">
-                        {r.breaches.breaches?.map((b: any, i: number) => (
-                          <span key={i} className="tag tag-red">{typeof b === 'string' ? b : b.name || b.title || JSON.stringify(b)}</span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {r.breaches.total !== undefined && <DtRow label="Total Breaches" value={r.breaches.total} />}
-                </div>
-              </Card>
-            )}
+                  </div>
+                )}
+                {r.breaches?.total !== undefined && <DtRow label="Total Breaches" value={r.breaches.total} />}
+              </div>
+            </KeyModuleCard>
           </div>
         )}
 

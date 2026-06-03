@@ -9,9 +9,20 @@ import { ResultsSkeleton } from './ResultsSkeleton';
 import { ToolPanels } from './tools/ToolPanels';
 import { ScanComparison } from './views/ScanComparison';
 import { startScan, getWsUrl, getScan } from '@/lib/api';
-import type { ScanType, ScanStatus, ToolMode, ScanResults as ScanResultsType, ScanMeta } from '@/lib/types';
+import type { ScanType, ScanStatus, ToolMode, ScanResults as ScanResultsType, ScanMeta, LiveModuleStatus } from '@/lib/types';
 
 type View = 'idle' | 'tool' | 'scanning' | 'results' | 'compare';
+
+/** Format a `module_done` event into a progress-log line per status. */
+function moduleDoneLine(msg: { module: string; status?: string; reason?: string; error?: string }): string {
+  const detail = msg.reason || msg.error;
+  switch (msg.status) {
+    case 'skipped': return `⊘ ${msg.module}: skipped${detail ? ` — ${detail}` : ''}`;
+    case 'rate_limited': return `⏳ ${msg.module}: rate limited${detail ? ` — ${detail}` : ''}`;
+    case 'error': return `✗ ${msg.module}: ${detail || 'error'}`;
+    default: return `✓ ${msg.module}`;
+  }
+}
 
 export function App() {
   const [view, setView] = useState<View>('idle');
@@ -22,7 +33,7 @@ export function App() {
   const [scanMeta, setScanMeta] = useState<(ScanMeta & { results: ScanResultsType }) | null>(null);
   const [progressLog, setProgressLog] = useState<string[]>([]);
   const [scanTarget, setScanTarget] = useState('');
-  const [moduleStatuses, setModuleStatuses] = useState<Record<string, 'running' | 'ok' | 'error'>>({});
+  const [moduleStatuses, setModuleStatuses] = useState<Record<string, LiveModuleStatus>>({});
   const [totalModules, setTotalModules] = useState(0);
   const [compareIds, setCompareIds] = useState<[string, string] | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -89,10 +100,7 @@ export function App() {
             const lines = [...prev];
             for (const msg of newMsgs) {
               if (msg.type === 'module_start') lines.push(`→ ${msg.module}`);
-              else if (msg.type === 'module_done') {
-                if (msg.status === 'error') lines.push(`✗ ${msg.module}: ${msg.error || 'error'}`);
-                else lines.push(`✓ ${msg.module}`);
-              }
+              else if (msg.type === 'module_done') lines.push(moduleDoneLine(msg));
             }
             return lines;
           });
@@ -100,7 +108,7 @@ export function App() {
             const next = { ...prev };
             for (const msg of newMsgs) {
               if (msg.type === 'module_start') next[msg.module] = 'running';
-              else if (msg.type === 'module_done') next[msg.module] = msg.status === 'error' ? 'error' : 'ok';
+              else if (msg.type === 'module_done') next[msg.module] = (msg.status as LiveModuleStatus) || 'ok';
             }
             return next;
           });
@@ -145,12 +153,8 @@ export function App() {
           setModuleStatuses(prev => ({ ...prev, [msg.module]: 'running' }));
 
         } else if (msg.type === 'module_done') {
-          setModuleStatuses(prev => ({ ...prev, [msg.module]: msg.status === 'error' ? 'error' : 'ok' }));
-          if (msg.status === 'error') {
-            setProgressLog(prev => [...prev, `✗ ${msg.module}: ${msg.error || 'error'}`]);
-          } else {
-            setProgressLog(prev => [...prev, `✓ ${msg.module}`]);
-          }
+          setModuleStatuses(prev => ({ ...prev, [msg.module]: (msg.status as LiveModuleStatus) || 'ok' }));
+          setProgressLog(prev => [...prev, moduleDoneLine(msg)]);
 
         } else if (msg.type === '_done') {
           done = true;

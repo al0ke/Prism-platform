@@ -334,8 +334,11 @@ class TestLeakLookup:
 
         monkeypatch.setattr(requests, "get", lambda *a, **k: MockResp())
         result = LeakLookup().check_email_hibp("x@example.com")
-        assert result["error"] is not None
-        assert "API key" in result["error"]
+        # HIBP 401 (key required) is reported as a graceful skip, not a hard error.
+        from modules.module_status import classify, SKIPPED
+        assert classify(result) == SKIPPED
+        assert result["error"] is None
+        assert "API key" in result["status_reason"]
 
     def test_check_password_pwned(self, monkeypatch):
         import requests
@@ -372,8 +375,10 @@ class TestLeakLookup:
         ll = LeakLookup()
         ll.leak_lookup_key = ""
         result = ll.check_leak_lookup("test@example.com")
-        assert result["error"] is not None
-        assert "not configured" in result["error"]
+        from modules.module_status import classify, SKIPPED
+        assert classify(result) == SKIPPED
+        assert result["error"] is None
+        assert "API key" in result["status_reason"]
 
     def test_check_email_full_structure(self, monkeypatch):
         import requests
@@ -402,8 +407,10 @@ class TestVirusTotal:
         monkeypatch.setattr("modules.threat_intel.VIRUSTOTAL_API_KEY", "")
         vt = VirusTotal()
         result = vt.check_ip("1.2.3.4")
-        assert result["error"] is not None
-        assert "not set" in result["error"]
+        from modules.module_status import classify, SKIPPED
+        assert classify(result) == SKIPPED
+        assert result["error"] is None
+        assert "API key" in result["status_reason"]
 
     def test_check_ip_success(self, monkeypatch):
         import requests
@@ -468,7 +475,10 @@ class TestAbuseIPDB:
         monkeypatch.setattr("modules.threat_intel.ABUSEIPDB_API_KEY", "")
         adb = AbuseIPDB()
         result = adb.check_ip("1.2.3.4")
-        assert result["error"] is not None
+        from modules.module_status import classify, SKIPPED
+        assert classify(result) == SKIPPED
+        assert result["error"] is None
+        assert "API key" in result["status_reason"]
 
     def test_check_ip_success(self, monkeypatch):
         import requests
