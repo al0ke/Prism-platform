@@ -3,6 +3,8 @@ from typing import Dict, Any, List
 import sys
 sys.path.append('..')
 from config import Colors, SHODAN_API_KEY
+from modules.module_status import annotate, print_status_notice, OK, SKIPPED, RATE_LIMITED, ERROR
+
 
 class ShodanLookup:
 
@@ -30,8 +32,7 @@ class ShodanLookup:
         }
 
         if not self.api_key:
-            result["error"] = "SHODAN_API_KEY not set in .env"
-            return result
+            return annotate(result, SKIPPED, "No API key configured (SHODAN_API_KEY)")
 
         try:
             r = requests.get(
@@ -44,8 +45,9 @@ class ShodanLookup:
                 result["error"] = "No information available for this IP in Shodan"
                 return result
             if r.status_code == 401:
-                result["error"] = "Invalid Shodan API key"
-                return result
+                return annotate(result, ERROR, "Invalid Shodan API key")
+            if r.status_code == 429:
+                return annotate(result, RATE_LIMITED, "Shodan API rate limit reached")
             if r.status_code != 200:
                 result["error"] = f"Shodan API returned {r.status_code}"
                 return result
@@ -81,9 +83,10 @@ class ShodanLookup:
                 services.append(svc)
 
             result["services"] = services
+            result["status"] = OK
 
         except Exception as e:
-            result["error"] = str(e)
+            return annotate(result, ERROR, str(e))
 
         return result
 
@@ -96,8 +99,7 @@ class ShodanLookup:
         }
 
         if not self.api_key:
-            result["error"] = "SHODAN_API_KEY not set in .env"
-            return result
+            return annotate(result, SKIPPED, "No API key configured (SHODAN_API_KEY)")
 
         try:
             r = requests.get(
@@ -106,6 +108,8 @@ class ShodanLookup:
                 timeout=20,
             )
 
+            if r.status_code == 429:
+                return annotate(result, RATE_LIMITED, "Shodan API rate limit reached")
             if r.status_code != 200:
                 result["error"] = f"Shodan API returned {r.status_code}: {r.text[:200]}"
                 return result
@@ -124,9 +128,10 @@ class ShodanLookup:
                         "version": match.get("version"),
                     }
                 )
+            result["status"] = OK
 
         except Exception as e:
-            result["error"] = str(e)
+            return annotate(result, ERROR, str(e))
 
         return result
 
@@ -135,6 +140,8 @@ class ShodanLookup:
         print(f"{Colors.BOLD}Shodan Host: {result['ip']}{Colors.RESET}")
         print(f"{Colors.CYAN}{'='*60}{Colors.RESET}")
 
+        if print_status_notice(result):
+            return
         if result.get("error"):
             print(f"{Colors.RED}Error: {result['error']}{Colors.RESET}")
             return
@@ -170,6 +177,8 @@ class ShodanLookup:
         print(f"{Colors.BOLD}Shodan Search: {result['query']}{Colors.RESET}")
         print(f"{Colors.CYAN}{'='*60}{Colors.RESET}")
 
+        if print_status_notice(result):
+            return
         if result.get("error"):
             print(f"{Colors.RED}Error: {result['error']}{Colors.RESET}")
             return
@@ -182,6 +191,7 @@ class ShodanLookup:
                     f"  {Colors.GREEN}{m['ip']}:{m['port']}{Colors.RESET} "
                     f"| {m.get('org', 'N/A')} | {m.get('country', 'N/A')}"
                 )
+
 
 def run_shodan():
     print(f"\n{Colors.BOLD}Shodan Lookup{Colors.RESET}")

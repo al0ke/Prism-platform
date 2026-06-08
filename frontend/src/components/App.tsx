@@ -5,11 +5,31 @@ import { Sidebar } from './Sidebar';
 import { IdleView } from './views/IdleView';
 import { ScanProgress } from './views/ScanProgress';
 import { ScanResults } from './views/ScanResults';
+import { ResultsSkeleton } from './ResultsSkeleton';
 import { ToolPanels } from './tools/ToolPanels';
+import { ScanComparison } from './views/ScanComparison';
 import { startScan, getWsUrl, getScan } from '@/lib/api';
-import type { ScanType, ScanStatus, ToolMode, ScanResults as ScanResultsType, ScanMeta } from '@/lib/types';
+import type { ScanType, ScanStatus, ToolMode, ScanResults as ScanResultsType, ScanMeta, LiveModuleStatus } from '@/lib/types';
 
-type View = 'idle' | 'tool' | 'scanning' | 'results';
+type View = 'idle' | 'tool' | 'scanning' | 'results' | 'compare';
+
+const LIVE_STATUSES: readonly LiveModuleStatus[] = ['ok', 'skipped', 'rate_limited', 'error', 'running'];
+
+function toLiveStatus(status: unknown): LiveModuleStatus {
+  return typeof status === 'string' && (LIVE_STATUSES as readonly string[]).includes(status)
+    ? (status as LiveModuleStatus)
+    : 'ok';
+}
+
+function moduleDoneLine(msg: { module: string; status?: string; reason?: string; error?: string }): string {
+  const detail = msg.reason || msg.error;
+  switch (msg.status) {
+    case 'skipped': return `⊘ ${msg.module}: skipped${detail ? ` — ${detail}` : ''}`;
+    case 'rate_limited': return `⏳ ${msg.module}: rate limited${detail ? ` — ${detail}` : ''}`;
+    case 'error': return `✗ ${msg.module}: ${detail || 'error'}`;
+    default: return `✓ ${msg.module}`;
+  }
+}
 
 export function App() {
   const [view, setView] = useState<View>('idle');
@@ -20,8 +40,9 @@ export function App() {
   const [scanMeta, setScanMeta] = useState<(ScanMeta & { results: ScanResultsType }) | null>(null);
   const [progressLog, setProgressLog] = useState<string[]>([]);
   const [scanTarget, setScanTarget] = useState('');
-  const [moduleStatuses, setModuleStatuses] = useState<Record<string, 'running' | 'ok' | 'error'>>({});
+  const [moduleStatuses, setModuleStatuses] = useState<Record<string, LiveModuleStatus>>({});
   const [totalModules, setTotalModules] = useState(0);
+  const [compareIds, setCompareIds] = useState<[string, string] | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   const handleHome = useCallback(() => {
@@ -35,6 +56,7 @@ export function App() {
     setScanTarget('');
     setModuleStatuses({});
     setTotalModules(0);
+    setCompareIds(null);
   }, []);
 
   const handleTool = useCallback((mode: ToolMode) => {
@@ -62,6 +84,15 @@ export function App() {
     }
   }, []);
 
+  const handleLoadScan = useCallback((scanId: string) => {
+    fetchAndShowResults(scanId);
+  }, [fetchAndShowResults]);
+
+  const handleCompare = useCallback((a: string, b: string) => {
+    setCompareIds([a, b]);
+    setView('compare');
+  }, []);
+
   const pollForResults = useCallback(async (id: string) => {
     let seenProgress = 0;
     for (let i = 0; i < 120; i++) {
@@ -76,10 +107,7 @@ export function App() {
             const lines = [...prev];
             for (const msg of newMsgs) {
               if (msg.type === 'module_start') lines.push(`→ ${msg.module}`);
-              else if (msg.type === 'module_done') {
-                if (msg.status === 'error') lines.push(`✗ ${msg.module}: ${msg.error || 'error'}`);
-                else lines.push(`✓ ${msg.module}`);
-              }
+              else if (msg.type === 'module_done') lines.push(moduleDoneLine(msg));
             }
             return lines;
           });
@@ -87,7 +115,7 @@ export function App() {
             const next = { ...prev };
             for (const msg of newMsgs) {
               if (msg.type === 'module_start') next[msg.module] = 'running';
-              else if (msg.type === 'module_done') next[msg.module] = msg.status === 'error' ? 'error' : 'ok';
+              else if (msg.type === 'module_done') next[msg.module] = toLiveStatus(msg.status);
             }
             return next;
           });
@@ -111,7 +139,7 @@ export function App() {
           setProgressLog(prev => [...prev, `Error: ${data.error || 'unknown'}`]);
           return;
         }
-      } catch { /* keep polling */ }
+      } catch {}
     }
     setScanStatus('failed');
   }, []);
@@ -132,12 +160,8 @@ export function App() {
           setModuleStatuses(prev => ({ ...prev, [msg.module]: 'running' }));
 
         } else if (msg.type === 'module_done') {
-          setModuleStatuses(prev => ({ ...prev, [msg.module]: msg.status === 'error' ? 'error' : 'ok' }));
-          if (msg.status === 'error') {
-            setProgressLog(prev => [...prev, `✗ ${msg.module}: ${msg.error || 'error'}`]);
-          } else {
-            setProgressLog(prev => [...prev, `✓ ${msg.module}`]);
-          }
+          setModuleStatuses(prev => ({ ...prev, [msg.module]: toLiveStatus(msg.status) }));
+          setProgressLog(prev => [...prev, moduleDoneLine(msg)]);
 
         } else if (msg.type === '_done') {
           done = true;
@@ -199,17 +223,23 @@ export function App() {
       <Topbar status={scanStatus} onHome={handleHome} onMenuToggle={() => setSidebarOpen(v => !v)} />
       <div className="flex flex-1 relative">
         {sidebarOpen && <div onClick={() => setSidebarOpen(false)} className="fixed inset-0 bg-black/50 z-40 md:hidden" />}
-        <Sidebar onScan={handleScan} isRunning={scanStatus === 'running'} isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+        <Sidebar onScan={handleScan} onLoadScan={handleLoadScan} onCompare={handleCompare} isRunning={scanStatus === 'running'} isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
         <main className="flex-1 min-w-0 relative z-10">
           {view === 'idle' && <IdleView onTool={handleTool} />}
           {view === 'tool' && toolMode && (
             <ToolPanels mode={toolMode} onBack={() => setView('idle')} />
           )}
           {view === 'scanning' && (
-            <ScanProgress log={progressLog} target={scanTarget} moduleStatuses={moduleStatuses} totalModules={totalModules} />
+            <>
+              <ScanProgress log={progressLog} target={scanTarget} moduleStatuses={moduleStatuses} totalModules={totalModules} />
+              <ResultsSkeleton />
+            </>
           )}
           {view === 'results' && scanMeta && (
             <ScanResults scan={scanMeta} />
+          )}
+          {view === 'compare' && compareIds && (
+            <ScanComparison scanIdA={compareIds[0]} scanIdB={compareIds[1]} onBack={handleHome} />
           )}
         </main>
       </div>

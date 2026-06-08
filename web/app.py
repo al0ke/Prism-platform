@@ -6,7 +6,8 @@ import time
 import uuid
 import threading
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
+import re
 import requests as _requests
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Depends, Request
@@ -14,6 +15,7 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
@@ -21,8 +23,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import config
 
 from modules.graph_builder import build_graph
+from modules.module_status import classify, reason_for, OK, ERROR
 from modules.opsec_score import score_from_results
 from modules.report_generator import generate_html_report, generate_pdf_report
+from modules.webhook_formatters import format_slack, format_discord
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
@@ -30,18 +34,22 @@ _LLM_KEY = OPENROUTER_API_KEY or GROQ_API_KEY
 _LLM_URL = "https://openrouter.ai/api/v1/chat/completions" if OPENROUTER_API_KEY else "https://api.groq.com/openai/v1/chat/completions"
 _LLM_MODEL = "nvidia/nemotron-3-nano-30b-a3b:free" if OPENROUTER_API_KEY else "llama-3.1-8b-instant"
 
-from web.security import require_api_key, validate_target, check_upload_size, get_allowed_origins, limiter, validate_scan_id, validate_url_not_private
+from web.security import (
+    require_api_key, validate_target, check_upload_size, get_allowed_origins,
+    limiter, validate_scan_id, validate_url_not_private,
+    get_principal, principal_for_key, ANONYMOUS_PRINCIPAL,
+)
 
 _disable_docs = os.getenv("DISABLE_DOCS", "").lower() in ("1", "true", "yes")
 app = FastAPI(
     title="OSINT Toolkit",
-    version="2.0",
+    version="2.3.0",
     docs_url=None if _disable_docs else "/docs",
     redoc_url=None if _disable_docs else "/redoc",
     openapi_url=None if _disable_docs else "/openapi.json",
 )
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, lambda req, exc: JSONResponse({"error": "Rate limit exceeded. Slow down."}, status_code=429))
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(_STATIC_DIR):
@@ -64,6 +72,15 @@ async def add_security_headers(request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
     return response
+
+@app.on_event("startup")
+async def _startup_banner() -> None:
+    print(
+        "\n  PRISM is running on http://localhost:8080\n"
+        "  ⭐ If you find it useful, star the repo: "
+        "https://github.com/NovaCode37/Prism-platform\n",
+        flush=True,
+    )
 
 _scans: Dict[str, Dict] = {}
 _queues: Dict[str, asyncio.Queue] = {}
@@ -102,6 +119,37 @@ def _set_cache(module: str, target: str, data: Any) -> None:
     except Exception:
         pass
 
+def _geocode_place(query: str) -> Optional[Dict]:
+    import hashlib
+    cache_path = os.path.join(_CACHE_DIR, "geocode_" + hashlib.md5(query.lower().encode()).hexdigest() + ".json")
+    try:
+        if os.path.exists(cache_path) and time.time() - os.path.getmtime(cache_path) < 30 * 86400:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    place = None
+    try:
+        r = _requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": query, "format": "json", "limit": 1},
+            headers={"User-Agent": "PRISM-OSINT/2.3 (https://github.com/NovaCode37/Prism-platform)"},
+            timeout=8,
+        )
+        arr = r.json()
+        if arr:
+            bb = arr[0].get("boundingbox")
+            bbox = [float(bb[0]), float(bb[1]), float(bb[2]), float(bb[3])] if bb and len(bb) == 4 else None
+            place = {"lat": float(arr[0]["lat"]), "lng": float(arr[0]["lon"]), "bbox": bbox}
+    except Exception:
+        return None
+    try:
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(place, f)
+    except Exception:
+        pass
+    return place
+
 def _scan_path(scan_id: str) -> str:
     return os.path.join(_SCANS_DIR, f"{scan_id}.json")
 
@@ -125,22 +173,28 @@ def _load_scan(scan_id: str) -> Optional[Dict]:
             pass
     return None
 
-def _list_scans_from_disk() -> List[Dict]:
+def _list_scans_from_disk(principal: Optional[str] = None) -> List[Dict]:
     result = []
     try:
-        for fname in sorted(os.listdir(_SCANS_DIR), reverse=True):
-            if fname.endswith(".json"):
-                try:
-                    with open(os.path.join(_SCANS_DIR, fname), "r", encoding="utf-8") as f:
-                        s = json.load(f)
-                        result.append(s)
-                except Exception:
-                    pass
-            if len(result) >= 50:
-                break
+        for fname in os.listdir(_SCANS_DIR):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(_SCANS_DIR, fname), "r", encoding="utf-8") as f:
+                    s = json.load(f)
+            except Exception:
+                continue
+            if principal is not None:
+                if (s.get("owner") or ANONYMOUS_PRINCIPAL) != principal:
+                    continue
+            result.append(s)
     except Exception:
         pass
-    return result
+    result.sort(key=lambda s: s.get("started_at") or "", reverse=True)
+    return result[:50]
+
+def _scan_visible_to(scan: Dict, principal: str) -> bool:
+    return (scan.get("owner") or ANONYMOUS_PRINCIPAL) == principal
 
 def _evict_old_scans() -> None:
     if len(_scans) <= MAX_STORED_SCANS:
@@ -196,8 +250,9 @@ async def _run_module(scan_id: str, name: str, coro_or_func, *args, force_refres
     cache_target = args[0] if args else None
     if not force_refresh and name in _CACHED_MODULES and cache_target:
         cached = _get_cached(name, str(cache_target))
-        if cached is not None:
-            await _push(scan_id, {"type": "module_done", "module": name, "status": "ok", "cached": True})
+        # Ignore legacy non-OK cache entries so the module can re-run.
+        if cached is not None and classify(cached) == OK:
+            await _push(scan_id, _done_message(name, cached, cached=True))
             return cached
     try:
         if asyncio.iscoroutinefunction(coro_or_func):
@@ -205,13 +260,17 @@ async def _run_module(scan_id: str, name: str, coro_or_func, *args, force_refres
         else:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, lambda: coro_or_func(*args, **kwargs))
-        if name in _CACHED_MODULES and cache_target and not (isinstance(result, dict) and result.get("error")):
+        status = classify(result)
+        if isinstance(result, dict) and "status" not in result:
+            result["status"] = status
+        # Cache only successful results so a missing key is not frozen in cache.
+        if name in _CACHED_MODULES and cache_target and status == OK:
             _set_cache(name, str(cache_target), result)
-        await _push(scan_id, {"type": "module_done", "module": name, "status": "ok"})
+        await _push(scan_id, _done_message(name, result))
         return result
     except Exception as exc:
-        await _push(scan_id, {"type": "module_done", "module": name, "status": "error", "error": str(exc)})
-        return {"error": str(exc)}
+        await _push(scan_id, {"type": "module_done", "module": name, "status": ERROR, "error": str(exc)})
+        return {"error": str(exc), "status": ERROR}
 
 async def _execute_scan(scan_id: str, target: str, scan_type: str, modules: list, force_refresh: bool = False) -> None:
     results: Dict[str, Any] = {}
@@ -247,10 +306,27 @@ async def _execute_scan(scan_id: str, target: str, scan_type: str, modules: list
                 )
 
             if want("wayback") and scan_type == "domain":
+                                                                            
+                                                                              
+                                                                            
+                                                            
                 from modules.wayback import WaybackMachine
                 results["wayback"] = await _run_module(
                     scan_id, "wayback", WaybackMachine().get_snapshots, target, 15, force_refresh=force_refresh
                 )
+                wayback_urls = await _run_module(
+                    scan_id, "wayback_urls", wb.get_all_urls, target, 200
+                )
+                merged = dict(wayback_snap) if isinstance(wayback_snap, dict) else {}
+                if isinstance(wayback_urls, dict):
+                    merged["urls"] = wayback_urls.get("urls", [])
+                    merged["total_urls"] = wayback_urls.get("total", 0)
+                    merged["interesting"] = wayback_urls.get("interesting", [])
+                                                                          
+                                                                           
+                    if wayback_urls.get("error") and not merged.get("error"):
+                        merged["urls_error"] = wayback_urls["error"]
+                results["wayback"] = merged
 
             if want("shodan"):
                 from modules.shodan_lookup import ShodanLookup
@@ -359,7 +435,7 @@ async def _execute_scan(scan_id: str, target: str, scan_type: str, modules: list
         await _push(scan_id, {"type": "module_start", "module": "opsec_score"})
         opsec = score_from_results(results)
         results["opsec_score"] = opsec
-        await _push(scan_id, {"type": "module_done", "module": "opsec_score", "status": "ok"})
+        await _push(scan_id, {"type": "module_done", "module": "opsec_score", "status": OK})
 
         graph = build_graph(target, scan_type, results)
         results["graph"] = graph
@@ -384,6 +460,22 @@ async def _execute_scan(scan_id: str, target: str, scan_type: str, modules: list
         await _push(scan_id, {"type": "scan_error", "error": safe_err})
     finally:
         await _push(scan_id, {"type": "_done"})
+        if webhook_url:
+            scan_snapshot = _scans.get(scan_id, {})
+            payload = {
+                "scan_id": scan_id,
+                "target": target,
+                "scan_type": scan_type,
+                "status": scan_snapshot.get("status"),
+                "started_at": scan_snapshot.get("started_at"),
+                "completed_at": scan_snapshot.get("completed_at"),
+                "error": scan_snapshot.get("error"),
+                "results": {
+                    k: v for k, v in (scan_snapshot.get("results") or {}).items()
+                    if k not in ("graph", "report_path")
+                },
+            }
+            threading.Thread(target=_send_webhook, args=(webhook_url, payload), daemon=True).start()
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
@@ -396,6 +488,13 @@ async def index():
 async def start_scan(request: Request, req: ScanRequest):
     target = validate_target(req.target)
 
+    webhook_url = None
+    if req.webhook_url:
+        try:
+            webhook_url = _validate_webhook_url(req.webhook_url.strip())
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+
     scan_type = req.scan_type if req.scan_type != "auto" else _detect_type(target)
     scan_id = str(uuid.uuid4())
 
@@ -406,6 +505,7 @@ async def start_scan(request: Request, req: ScanRequest):
         "scan_type": scan_type,
         "status": "running",
         "started_at": datetime.now().isoformat(),
+        "owner": get_principal(request),
         "results": None,
         "progress": [],
     }
@@ -429,79 +529,34 @@ async def start_scan(request: Request, req: ScanRequest):
 async def get_scan(request: Request, scan_id: str):
     validate_scan_id(scan_id)
     scan = _load_scan(scan_id)
-    if not scan:
+    if not scan or not _scan_visible_to(scan, get_principal(request)):
         return JSONResponse({"error": "Scan not found"}, status_code=404)
-    safe = {k: v for k, v in scan.items() if k not in ("results",)}
+    safe = {k: v for k, v in scan.items() if k not in ("results", "owner")}
     if scan.get("results"):
         res_copy = {k: v for k, v in scan["results"].items() if k not in ("graph", "report_path")}
         safe["results"] = res_copy
     safe["progress"] = scan.get("progress", [])
     return safe
 
-def _geocode_sync(query: str) -> Optional[Tuple[float, float]]:
-    try:
-        r = _requests.get(
-            "https://nominatim.openstreetmap.org/search",
-            params={"q": query, "format": "json", "limit": 1},
-            headers={"User-Agent": "OSINT-Toolkit/2.0"},
-            timeout=8,
-        )
-        data = r.json()
-        if data:
-            return (float(data[0]["lat"]), float(data[0]["lon"]))
-    except Exception:
-        pass
-    return None
-
 @app.get("/api/scan/{scan_id}/graph", dependencies=[Depends(require_api_key)])
 @limiter.limit("30/minute")
 async def get_graph(request: Request, scan_id: str):
     validate_scan_id(scan_id)
     scan = _load_scan(scan_id)
-    if not scan or not scan.get("results"):
+    if not scan or not _scan_visible_to(scan, get_principal(request)) or not scan.get("results"):
         return JSONResponse({"error": "Scan not found or not completed"}, status_code=404)
     return scan["results"].get("graph", {"nodes": [], "edges": []})
 
-_COUNTRY_COORDS: Dict[str, tuple] = {
-    "RU": (55.7558, 37.6173), "US": (38.8951, -77.0364), "GB": (51.5074, -0.1278),
-    "DE": (52.5200, 13.4050), "FR": (48.8566,  2.3522), "CN": (39.9042, 116.4074),
-    "JP": (35.6762, 139.6503),"IN": (28.6139, 77.2090), "BR": (-15.7975,-47.8919),
-    "CA": (45.4215,-75.6972), "AU": (-35.2809,149.1300), "UA": (50.4501, 30.5234),
-    "PL": (52.2297, 21.0122), "NL": (52.3676,  4.9041), "IT": (41.9028, 12.4964),
-    "ES": (40.4168, -3.7038), "SE": (59.3293, 18.0686), "NO": (59.9139, 10.7522),
-    "FI": (60.1699, 24.9384), "DK": (55.6761, 12.5683), "CH": (46.9480,  7.4474),
-    "AT": (48.2082, 16.3738), "BE": (50.8503,  4.3517), "TR": (39.9334, 32.8597),
-    "MX": (19.4326,-99.1332), "AR": (-34.6037,-58.3816),"ZA": (-25.7479, 28.2293),
-    "NG": ( 9.0765,  7.3986), "EG": (30.0444, 31.2357), "SA": (24.7136, 46.6753),
-    "IR": (35.6892, 51.3890), "PK": (33.7294, 73.0931), "BD": (23.8103, 90.4125),
-    "ID": (-6.2088,106.8456), "TH": (13.7563,100.5018), "VN": (21.0285,105.8542),
-    "PH": (14.5995,120.9842), "MY": ( 3.1390,101.6869), "SG": ( 1.3521,103.8198),
-    "KR": (37.5665,126.9780), "KZ": (51.1811, 71.4460), "UZ": (41.2995, 69.2401),
-    "GE": (41.7151, 44.8271), "AZ": (40.4093, 49.8671), "AM": (40.1872, 44.5152),
-    "BY": (53.9045, 27.5615), "MD": (47.0105, 28.8638), "RO": (44.4268, 26.1025),
-    "BG": (42.6977, 23.3219), "RS": (44.8176, 20.4633), "HR": (45.8150, 15.9819),
-    "SK": (48.1486, 17.1077), "CZ": (50.0755, 14.4378), "HU": (47.4979, 19.0402),
-    "IL": (31.7683, 35.2137), "AE": (24.4539, 54.3773), "QA": (25.2854, 51.5310),
-    "KW": (29.3759, 47.9774), "IQ": (33.3152, 44.3661), "LT": (54.6872, 25.2797),
-    "LV": (56.9460, 24.1059), "EE": (59.4370, 24.7536), "PT": (38.7169, -9.1395),
-    "GR": (37.9838, 23.7275), "CY": (35.1264, 33.4299), "LU": (49.6117,  6.1319),
-    "IE": (53.3498, -6.2603), "NZ": (-41.2865,174.7762), "CL": (-33.4489,-70.6693),
-    "CO": ( 4.7110,-74.0721), "PE": (-12.0464,-77.0428), "VE": (10.4806,-66.9036),
-    "MM": (19.7633, 96.0785), "LK": ( 6.9271, 79.8612), "NP": (27.7172, 85.3240),
-    "AF": (34.5553, 69.2075), "TZ": (-6.3690, 34.8888), "KE": (-1.2921, 36.8219),
-    "ET": ( 8.9806, 38.7578), "MA": (33.9716, -6.8498), "DZ": (36.7372,  3.0865),
-    "TN": (36.8189,  9.8253), "LY": (32.9022, 13.1805), "GH": ( 5.6037, -0.1870),
-    "CI": ( 5.3600, -4.0083), "CM": ( 3.8480, 11.5021), "AO": (-8.8390, 13.2894),
-    "MZ": (-25.9692, 32.5732),"ZW": (-17.8292, 31.0522),"SN": (14.7167,-17.4677),
-    "UG": ( 0.3476, 32.5825), "RW": (-1.9403, 29.8739),
-}
+                                                                       
+                                                                        
+                                                                   
 
 @app.get("/api/scan/{scan_id}/map", dependencies=[Depends(require_api_key)])
 @limiter.limit("30/minute")
 async def get_map_data(request: Request, scan_id: str):
     validate_scan_id(scan_id)
     scan = _load_scan(scan_id)
-    if not scan or not scan.get("results"):
+    if not scan or not _scan_visible_to(scan, get_principal(request)) or not scan.get("results"):
         return JSONResponse({"error": "Scan not found or not completed"}, status_code=404)
 
     results = scan["results"]
@@ -544,28 +599,27 @@ async def get_map_data(request: Request, scan_id: str):
 
     hlr = results.get("hlr", {})
     if hlr and not hlr.get("error"):
-        coords: Optional[Tuple[float, float]] = None
         country_str = hlr.get("country_name") or hlr.get("country") or ""
-        region_str  = hlr.get("location") or hlr.get("region") or ""
+        region_str = hlr.get("location") or hlr.get("region") or ""
+        phone_label = hlr.get("formatted") or hlr.get("phone")
+        raw_lat = hlr.get("lat", hlr.get("latitude"))
+        raw_lng = hlr.get("lng", hlr.get("longitude"))
+        lat = None
+        lng = None
+        try:
+            if raw_lat is not None and raw_lng is not None:
+                lat = float(raw_lat)
+                lng = float(raw_lng)
+        except (TypeError, ValueError):
+            lat = None
+            lng = None
 
-        if region_str and country_str:
-            loop = asyncio.get_event_loop()
-            coords = await loop.run_in_executor(
-                None, _geocode_sync, f"{region_str}, {country_str}"
-            )
-        if not coords and country_str:
-            loop = asyncio.get_event_loop()
-            coords = await loop.run_in_executor(None, _geocode_sync, country_str)
-        if not coords:
-            cc = (hlr.get("country_code") or "").upper()
-            raw = _COUNTRY_COORDS.get(cc)
-            coords = raw if raw else None
-
-        if coords:
+        if lat is not None and lng is not None:
+            approx = bool(hlr.get("approximate", False))
             markers.append({
-                "lat": coords[0], "lng": coords[1],
-                "ip": hlr.get("formatted") or hlr.get("phone"),
-                "label": hlr.get("formatted") or hlr.get("phone"),
+                "lat": lat, "lng": lng,
+                "ip": phone_label,
+                "label": phone_label,
                 "city": region_str or None,
                 "country": country_str or None,
                 "org": hlr.get("carrier"),
@@ -573,25 +627,74 @@ async def get_map_data(request: Request, scan_id: str):
                 "type": "phone",
                 "valid": hlr.get("valid"),
                 "line_type": hlr.get("line_type"),
+                "approximate": approx,
+                "precision": hlr.get("precision") or ("approximate" if approx else "exact"),
             })
 
     center = markers[0] if markers else None
-    zoom = 4 if (markers and markers[0].get("type") == "phone") else None
-    return {"markers": markers, "center": center, "zoom": zoom}
+    zoom = 5 if (markers and markers[0].get("type") == "phone") else None
+
+    info = None
+    if not markers:
+        hlr = results.get("hlr") or {}
+        phone = results.get("phone") or {}
+        country = hlr.get("country_name") or hlr.get("country") or phone.get("country_name")
+        carrier = hlr.get("carrier") or phone.get("carrier")
+        region = hlr.get("location") or hlr.get("region") or phone.get("region")
+        phone_label = hlr.get("formatted") or hlr.get("phone") or scan["target"]
+
+        place = None
+        if region or country:
+            place = _geocode_place(", ".join(p for p in (region, country) if p))
+
+        if place:
+            bbox = place.get("bbox")
+            if bbox:
+                clat, clng = (bbox[0] + bbox[1]) / 2, (bbox[2] + bbox[3]) / 2
+            else:
+                clat, clng = place["lat"], place["lng"]
+            markers.append({
+                "lat": clat, "lng": clng,
+                "bbox": bbox,
+                "ip": phone_label, "label": phone_label,
+                "city": region or None, "country": country or None,
+                "org": carrier, "type": "phone",
+                "approximate": True,
+                "precision": "region" if region else "country",
+            })
+            center = markers[0]
+            zoom = 7 if region else 4
+        elif country or carrier or region:
+            info = {
+                "reason": "Phone numbers don't expose precise GPS coordinates.",
+                "country": country or None,
+                "carrier": carrier or None,
+                "region": region or None,
+            }
+
+    return {"markers": markers, "center": center, "zoom": zoom, "info": info}
+
+def _normalize_lang(raw: Optional[str]) -> str:
+    from modules.report_i18n import SUPPORTED_LANGS
+    if not raw:
+        return "en"
+    key = raw.lower().split("-")[0].strip()
+    return key if key in SUPPORTED_LANGS else "en"
 
 @app.get("/api/scan/{scan_id}/report", dependencies=[Depends(require_api_key)])
 @limiter.limit("10/minute")
-async def download_report(request: Request, scan_id: str):
+async def download_report(request: Request, scan_id: str, lang: str = "en"):
     validate_scan_id(scan_id)
     scan = _load_scan(scan_id)
-    if not scan or not scan.get("results"):
+    if not scan or not _scan_visible_to(scan, get_principal(request)) or not scan.get("results"):
         return JSONResponse({"error": "Scan not found or not completed"}, status_code=404)
     results = scan["results"]
     opsec = results.get("opsec_score")
+    lang = _normalize_lang(lang)
     loop = asyncio.get_event_loop()
     report_path = await loop.run_in_executor(
         None,
-        lambda: generate_html_report(scan["target"], scan["scan_type"], results, opsec),
+        lambda: generate_html_report(scan["target"], scan["scan_type"], results, opsec, lang=lang),
     )
     scan["results"]["report_path"] = report_path
     return FileResponse(
@@ -602,18 +705,19 @@ async def download_report(request: Request, scan_id: str):
 
 @app.get("/api/scan/{scan_id}/report/pdf", dependencies=[Depends(require_api_key)])
 @limiter.limit("5/minute")
-async def download_report_pdf(request: Request, scan_id: str):
+async def download_report_pdf(request: Request, scan_id: str, lang: str = "en"):
     validate_scan_id(scan_id)
     scan = _load_scan(scan_id)
-    if not scan or not scan.get("results"):
+    if not scan or not _scan_visible_to(scan, get_principal(request)) or not scan.get("results"):
         return JSONResponse({"error": "Scan not found or not completed"}, status_code=404)
     results = scan["results"]
     opsec = results.get("opsec_score")
+    lang = _normalize_lang(lang)
     loop = asyncio.get_event_loop()
     try:
         pdf_path = await loop.run_in_executor(
             None,
-            lambda: generate_pdf_report(scan["target"], scan["scan_type"], results, opsec),
+            lambda: generate_pdf_report(scan["target"], scan["scan_type"], results, opsec, lang=lang),
         )
     except ImportError as e:
         return JSONResponse({"error": str(e)}, status_code=501)
@@ -639,7 +743,68 @@ async def scan_url(request: Request, req: dict):
     result = await loop.run_in_executor(None, URLScanner().scan, url)
     return result
 
-@app.post("/api/crypto", dependencies=[Depends(require_api_key)])
+_OUI_DATA: Optional[Dict[str, str]] = None
+
+def _get_oui_data() -> Dict[str, str]:
+    global _OUI_DATA
+    if _OUI_DATA is None:
+        oui_path = os.path.join(os.path.dirname(__file__), "oui_data.json")
+        try:
+            with open(oui_path, "r", encoding="utf-8") as f:
+                _OUI_DATA = json.load(f)
+        except Exception:
+            _OUI_DATA = {}
+    return _OUI_DATA
+
+def _lookup_local_oui(mac: str) -> Optional[str]:
+    oui_data = _get_oui_data()
+    prefix = mac.upper().replace("-", ":")
+    first_three = ":".join(prefix.split(":")[:3])
+    return oui_data.get(first_three)
+
+@app.post("/api/mac-lookup", dependencies=[Depends(require_api_key)])
+@limiter.limit("20/minute")
+async def mac_lookup(request: Request, req: dict):
+    mac = req.get("mac", "").strip()
+    if not mac or len(mac) > 17:
+        return JSONResponse({"error": "No MAC address provided or format too long"}, status_code=400)
+    mac_pattern = re.compile(r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$')
+    if not mac_pattern.match(mac):
+        return JSONResponse({"error": "Invalid MAC address format. Expected: 00:00:5e:00:53:af"}, status_code=400)
+
+    normalized_mac = mac.upper().replace("-", ":")
+    cached = _get_cached("mac", normalized_mac)
+    if cached:
+        return cached
+
+    vendor = _lookup_local_oui(normalized_mac)
+    if vendor:
+        result = {"mac": normalized_mac, "vendor": vendor, "source": "local"}
+        _set_cache("mac", normalized_mac, result)
+        return result
+
+    try:
+        loop = asyncio.get_event_loop()
+        def _fetch():
+            resp = _requests.get(f"https://api.macvendors.com/{mac}", timeout=10)
+            if resp.status_code == 200:
+                return {"mac": normalized_mac, "vendor": resp.text.strip(), "source": "api"}
+            elif resp.status_code == 404:
+                return {"mac": normalized_mac, "vendor": None, "error": "Not found", "source": "api"}
+            else:
+                return {"mac": normalized_mac, "vendor": None, "error": f"API returned status {resp.status_code}", "source": "api"}
+        result = await loop.run_in_executor(None, _fetch)
+        if result.get("vendor") and not result.get("error"):
+            _set_cache("mac", normalized_mac, result)
+        return result
+    except Exception as e:
+        local_vendor = _lookup_local_oui(normalized_mac)
+        if local_vendor:
+            result = {"mac": normalized_mac, "vendor": local_vendor, "source": "local_fallback"}
+            _set_cache("mac", normalized_mac, result)
+            return result
+        return JSONResponse({"error": str(e), "mac": normalized_mac, "vendor": None}, status_code=500)
+
 @limiter.limit("20/minute")
 async def crypto_lookup(request: Request, req: dict):
     address = req.get("address", "").strip()
@@ -717,7 +882,7 @@ async def ai_summary(request: Request, req: dict):
         return JSONResponse({"error": "OPENROUTER_API_KEY or GROQ_API_KEY not set in .env"}, status_code=400)
     scan_id = req.get("scan_id")
     scan = _load_scan(scan_id) if scan_id else None
-    if not scan or not scan.get("results"):
+    if not scan or not _scan_visible_to(scan, get_principal(request)) or not scan.get("results"):
         return JSONResponse({"error": "Scan not found"}, status_code=404)
 
     results = scan["results"]
@@ -766,6 +931,9 @@ async def ai_chat(request: Request, req: dict):
     if not message:
         return JSONResponse({"error": "No message provided"}, status_code=400)
     scan = _load_scan(scan_id) if scan_id else None
+    if scan and not _scan_visible_to(scan, get_principal(request)):
+                                                                             
+        scan = None
     context = ""
     if scan and scan.get("results"):
         results = scan["results"]
@@ -809,7 +977,7 @@ async def ai_chat(request: Request, req: dict):
 @app.get("/api/scans", dependencies=[Depends(require_api_key)])
 @limiter.limit("30/minute")
 async def list_scans(request: Request):
-    all_scans = _list_scans_from_disk()
+    all_scans = _list_scans_from_disk(principal=get_principal(request))
     return [
         {
             "scan_id": s.get("scan_id", ""),
@@ -828,13 +996,16 @@ async def websocket_endpoint(websocket: WebSocket, scan_id: str):
     except Exception:
         await websocket.close(code=1008)
         return
-    import hmac as _hmac
-    from web.security import API_KEY
-    if API_KEY:
-        token = websocket.query_params.get("api_key", "")
-        if not token or not _hmac.compare_digest(token, API_KEY):
-            await websocket.close(code=1008)
-            return
+    token = websocket.query_params.get("api_key", "")
+    principal = principal_for_key(token)
+    if principal is None:
+        await websocket.close(code=1008)
+        return
+                                                                              
+    scan = _scans.get(scan_id) or _load_scan(scan_id)
+    if scan and not _scan_visible_to(scan, principal):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     q = _queues.get(scan_id)
     if not q:

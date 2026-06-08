@@ -6,6 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libssl-dev \
     libffi-dev \
+    libcairo2-dev \
+    pkg-config \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-web.txt .
@@ -19,5 +22,8 @@ COPY . .
 RUN mkdir -p results
 
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:8080/ || exit 1
 
 CMD ["python", "-m", "uvicorn", "web.app:app", "--host", "0.0.0.0", "--port", "8080"]

@@ -6,6 +6,7 @@ import sys
 sys.path.append('..')
 from config import NUMVERIFY_API_KEY, Colors
 
+
 class HLRLookup:
 
     def __init__(self):
@@ -43,7 +44,7 @@ class HLRLookup:
             region_code = phonenumbers.region_code_for_number(parsed)
             result["country_code"] = region_code
             result["region"] = geocoder.description_for_number(parsed, "en")
-            # Use region_code to get country name; fall back to geocoder description
+                                                                                    
             from phonenumbers import PhoneMetadata
             _country_names = {
                 "US": "United States", "GB": "United Kingdom", "DE": "Germany",
@@ -202,6 +203,7 @@ class HLRLookup:
                     pass
 
         return result
+
 
 def run_hlr_lookup():
     hlr = HLRLookup()

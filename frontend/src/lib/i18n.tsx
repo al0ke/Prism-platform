@@ -2,11 +2,15 @@
 import { createContext, useContext, useEffect, useState, ReactNode, useCallback } from 'react';
 import en from '@/messages/en.json';
 import ru from '@/messages/ru.json';
+import de from '@/messages/de.json';
+import fr from '@/messages/fr.json';
+import es from '@/messages/es.json';
 
-export type Locale = 'en' | 'ru';
+export type Locale = 'en' | 'ru' | 'de' | 'fr' | 'es';
 type Messages = typeof en;
 
-const MESSAGES: Record<Locale, Messages> = { en, ru: ru as Messages };
+const MESSAGES: Record<Locale, Messages> = { en, ru: ru as Messages, de: de as Messages, fr: fr as Messages, es: es as Messages };
+export const SUPPORTED_LOCALES: Locale[] = ['en', 'ru', 'de', 'fr', 'es'];
 const STORAGE_KEY = 'prism_locale';
 
 interface I18nContextValue {
@@ -36,20 +40,21 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEY) as Locale | null;
-      if (stored === 'en' || stored === 'ru') {
+      if (stored && SUPPORTED_LOCALES.includes(stored)) {
         setLocaleState(stored);
         return;
       }
-      // Fallback: detect from browser
-      if (typeof navigator !== 'undefined' && navigator.language?.toLowerCase().startsWith('ru')) {
-        setLocaleState('ru');
-      }
-    } catch { /* ignore */ }
+      const lang = (typeof navigator !== 'undefined' ? navigator.language?.toLowerCase() : '') || '';
+      if (lang.startsWith('ru')) setLocaleState('ru');
+      else if (lang.startsWith('de')) setLocaleState('de');
+      else if (lang.startsWith('fr')) setLocaleState('fr');
+      else if (lang.startsWith('es')) setLocaleState('es');
+    } catch {}
   }, []);
 
   const setLocale = useCallback((l: Locale) => {
     setLocaleState(l);
-    try { localStorage.setItem(STORAGE_KEY, l); } catch { /* ignore */ }
+    try { localStorage.setItem(STORAGE_KEY, l); } catch {}
   }, []);
 
   const t = useCallback((key: string) => lookup(MESSAGES[locale], key), [locale]);
@@ -64,7 +69,6 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 export function useTranslations() {
   const ctx = useContext(I18nContext);
   if (!ctx) {
-    // Fallback: return key as-is when used outside provider
     return { locale: 'en' as Locale, setLocale: () => {}, t: (key: string) => key };
   }
   return ctx;

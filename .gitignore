@@ -35,6 +35,8 @@ node_modules/
 frontend/.next/
 frontend/out/
 frontend/build/
+frontend/tsconfig.tsbuildinfo
+*.tsbuildinfo
 frontend/.env
 frontend/.env.local
 frontend/.env.*.local

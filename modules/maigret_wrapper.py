@@ -7,6 +7,7 @@ import sys
 sys.path.append('..')
 from config import OUTPUT_DIR, Colors
 
+
 class MaigretWrapper:
 
     def __init__(self):
@@ -43,7 +44,7 @@ class MaigretWrapper:
             venv_path = os.path.join(project_root, "venv-maigret")
             if not os.path.isdir(venv_path):
                 subprocess.run([sys.executable, "-m", "venv", venv_path], check=True, timeout=30)
-            pip_bin = os.path.join(venv_path, "Scripts", "pip.exe") if sys.platform == "win32" \
+            pip_bin = os.path.join(venv_path, "Scripts", "pip.exe") if sys.platform == "win32"\
                 else os.path.join(venv_path, "bin", "pip")
             result = subprocess.run(
                 [pip_bin, "install", "maigret"],
@@ -182,6 +183,7 @@ class MaigretWrapper:
             for f in result["output_files"]:
                 if os.path.exists(f):
                     print(f"  {Colors.GREEN}✓{Colors.RESET} {f}")
+
 
 def run_maigret():
     maigret = MaigretWrapper()

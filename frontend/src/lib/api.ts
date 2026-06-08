@@ -44,6 +44,10 @@ export async function scanUrl(url: string): Promise<UrlScanResult> {
   return post('/api/url-scan', { url });
 }
 
+export async function lookupMac(mac: string): Promise<import('./types').MacResult> {
+  return post('/api/mac-lookup', { mac });
+}
+
 export async function lookupCrypto(address: string): Promise<CryptoResult> {
   return post('/api/crypto', { address });
 }
@@ -94,14 +98,29 @@ export function getWsUrl(scanId: string): string {
   return API_KEY ? `${ws}/ws/${scanId}?api_key=${API_KEY}` : `${ws}/ws/${scanId}`;
 }
 
-export function getReportUrl(scanId: string): string {
-  return API_KEY
-    ? `${API}/api/scan/${scanId}/report?api_key=${API_KEY}`
-    : `${API}/api/scan/${scanId}/report`;
+export type ScanListItem = {
+  scan_id: string;
+  target: string;
+  scan_type: string;
+  status: string;
+  started_at: string;
+};
+
+export async function listScans(): Promise<ScanListItem[]> {
+  const r = await fetch(`${API}/api/scans`, { headers: authHeaders() });
+  if (!r.ok) return [];
+  return r.json();
 }
 
-export function getReportPdfUrl(scanId: string): string {
-  return API_KEY
-    ? `${API}/api/scan/${scanId}/report/pdf?api_key=${API_KEY}`
-    : `${API}/api/scan/${scanId}/report/pdf`;
+export async function fetchReportBlob(scanId: string, format: 'html' | 'pdf', lang?: string): Promise<Blob> {
+  const suffix = format === 'pdf' ? '/pdf' : '';
+  const q = lang ? `?lang=${encodeURIComponent(lang)}` : '';
+  const r = await fetch(`${API}/api/scan/${scanId}/report${suffix}${q}`, { headers: authHeaders() });
+  if (!r.ok) {
+    const text = await r.text();
+    let detail = text.slice(0, 200);
+    try { detail = JSON.parse(text)?.detail ?? detail; } catch {}
+    throw new Error(`HTTP ${r.status}: ${detail}`);
+  }
+  return r.blob();
 }

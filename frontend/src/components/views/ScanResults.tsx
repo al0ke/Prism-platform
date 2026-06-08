@@ -5,29 +5,172 @@ import type { ScanResults, ScanMeta, OpsecFinding } from '@/lib/types';
 import { getReportUrl, getReportPdfUrl, generateAiSummary, sendAiChat, getMapData, getGraphData, startScan, getScan } from '@/lib/api';
 import { useTranslations } from '@/lib/i18n';
 
+type MapMarker = {
+  lat: number;
+  lng: number;
+  label: string;
+  city?: string;
+  country?: string;
+  org?: string;
+  ip?: string;
+  approximate?: boolean;
+  precision?: string;
+  bbox?: number[];
+};
+
+type MapData = {
+  markers: MapMarker[];
+  center: { lat: number; lng: number } | null;
+  zoom?: number | null;
+  info?: { reason?: string; country?: string | null; carrier?: string | null; region?: string | null } | null;
+};
+
+let leafletLoader: Promise<any> | null = null;
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+}
+
+function filenameSegment(value: string): string {
+  return value.trim().replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'scan';
+}
+
+function loadLeaflet(): Promise<any> {
+  const w = window as any;
+  if (w.L) return Promise.resolve(w.L);
+  if (leafletLoader) return leafletLoader;
+  leafletLoader = new Promise((resolve, reject) => {
+    if (!document.querySelector('link[data-leaflet]')) {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      link.setAttribute('data-leaflet', '1');
+      document.head.appendChild(link);
+    }
+    const existing = document.querySelector('script[data-leaflet]') as HTMLScriptElement | null;
+    if (existing) {
+      existing.addEventListener('load', () => resolve((window as any).L), { once: true });
+      existing.addEventListener('error', () => reject(new Error('Failed to load Leaflet')), { once: true });
+      return;
+    }
+    const s = document.createElement('script');
+    s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    s.setAttribute('data-leaflet', '1');
+    s.onload = () => resolve((window as any).L);
+    s.onerror = () => reject(new Error('Failed to load Leaflet'));
+    document.head.appendChild(s);
+  });
+  return leafletLoader;
+}
+
 function MapView({ scanId, onCopy }: { scanId: string; onCopy: (value: string) => void }) {
-  const [data, setData] = useState<{ markers: { lat: number; lng: number; label: string; city?: string; country?: string; org?: string; ip?: string }[]; center: { lat: number; lng: number } | null } | null>(null);
+  const [data, setData] = useState<MapData | null>(null);
   const [error, setError] = useState('');
+  const mapHostRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<any>(null);
+  const markersRef = useRef<any>(null);
 
   useEffect(() => {
     getMapData(scanId)
-      .then((d: any) => { if (d.error) setError(d.error); else setData(d); })
+      .then((d: any) => { if (d.error) setError(d.error); else setData(d as MapData); })
       .catch(e => setError(e.message));
   }, [scanId]);
 
+  useEffect(() => {
+    if (!data?.markers?.length || !mapHostRef.current) return;
+    let cancelled = false;
+    loadLeaflet()
+      .then((L) => {
+        if (cancelled || !mapHostRef.current) return;
+        if (!mapRef.current) {
+          mapRef.current = L.map(mapHostRef.current, { zoomControl: true });
+          mapRef.current.attributionControl.setPrefix('<a href="https://leafletjs.com" target="_blank" rel="noopener noreferrer">Leaflet</a>');
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap', maxZoom: 18,
+          }).addTo(mapRef.current);
+        }
+
+        if (markersRef.current) markersRef.current.clearLayers();
+        else markersRef.current = L.layerGroup().addTo(mapRef.current);
+
+        const bounds: [number, number][] = [];
+        for (const m of data.markers) {
+          if (!Number.isFinite(m.lat) || !Number.isFinite(m.lng)) continue;
+          const parts = [
+            m.ip ? `IP: ${escapeHtml(m.ip)}` : '',
+            m.city || m.country ? `Location: ${escapeHtml([m.city, m.country].filter(Boolean).join(', '))}` : '',
+            m.org ? `Organization: ${escapeHtml(m.org)}` : '',
+            m.precision ? `Precision: ${escapeHtml(m.precision)}` : '',
+          ].filter(Boolean);
+          const popup = `<b>${escapeHtml(m.label || m.ip || 'Location')}</b><br/>${parts.join('<br/>')}`;
+          const hasBbox = m.approximate && Array.isArray(m.bbox) && m.bbox.length === 4;
+          if (hasBbox) {
+            const sw: [number, number] = [m.bbox![0], m.bbox![2]];
+            const ne: [number, number] = [m.bbox![1], m.bbox![3]];
+            L.rectangle([sw, ne], { color: '#4f8ef7', weight: 1, fillColor: '#4f8ef7', fillOpacity: 0.10 })
+              .bindPopup(`${popup}<br/><i>Approximate ${escapeHtml(m.precision || 'area')}-level — phone numbers don't expose an exact location</i>`)
+              .addTo(markersRef.current);
+            bounds.push(sw, ne);
+          } else if (m.approximate) {
+            const radius = m.precision === 'country' ? 250000 : 70000;
+            L.circle([m.lat, m.lng], { radius, color: '#4f8ef7', weight: 1, fillColor: '#4f8ef7', fillOpacity: 0.12 })
+              .bindPopup(`${popup}<br/><i>Approximate ${escapeHtml(m.precision || 'area')}-level location</i>`)
+              .addTo(markersRef.current);
+            bounds.push([m.lat, m.lng]);
+          } else {
+            L.marker([m.lat, m.lng]).bindPopup(popup).addTo(markersRef.current);
+            bounds.push([m.lat, m.lng]);
+          }
+        }
+
+        if (bounds.length === 1) {
+          mapRef.current.setView(bounds[0], typeof data.zoom === 'number' ? data.zoom : 10);
+        } else if (bounds.length > 1) {
+          mapRef.current.fitBounds(bounds, { padding: [24, 24] });
+        }
+
+        requestAnimationFrame(() => {
+          if (!cancelled && mapRef.current) mapRef.current.invalidateSize();
+        });
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to render map'));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [data]);
+
+  useEffect(() => () => {
+    if (mapRef.current) {
+      mapRef.current.remove();
+      mapRef.current = null;
+      markersRef.current = null;
+    }
+  }, []);
+
   if (error) return <div className="text-red text-sm">{error}</div>;
   if (!data) return <div className="text-text-3 text-sm animate-pulse">Loading map…</div>;
-  if (!data.markers?.length) return <div className="text-text-3 text-sm">No geolocation data available</div>;
+  if (!data.markers?.length) {
+    if (data.info && (data.info.country || data.info.carrier || data.info.region)) {
+      return (
+        <div className="text-[12px]">
+          <div className="text-text-2 mb-2">{data.info.reason || 'No precise coordinates available.'}</div>
+          <div className="grid grid-cols-2 gap-x-8 gap-y-1 max-w-md">
+            {data.info.country && <div className="dt-row"><span className="dt-label">Country</span><span className="dt-value">{data.info.country}</span></div>}
+            {data.info.region && <div className="dt-row"><span className="dt-label">Region</span><span className="dt-value">{data.info.region}</span></div>}
+            {data.info.carrier && <div className="dt-row"><span className="dt-label">Carrier</span><span className="dt-value">{data.info.carrier}</span></div>}
+          </div>
+        </div>
+      );
+    }
+    return <div className="text-text-3 text-sm">No geolocation data available</div>;
+  }
 
   const m = data.markers[0];
-  const pad = 0.15;
-  const bbox = `${m.lng - pad},${m.lat - pad},${m.lng + pad},${m.lat + pad}`;
-  const iframeSrc = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${m.lat},${m.lng}`;
 
   return (
     <div>
-      <iframe src={iframeSrc} className="w-full rounded-md border border-border-1 h-64 sm:h-[360px]" style={{ border: 0 }}
-        title="IP Geolocation Map" loading="lazy" />
+      <div ref={mapHostRef} className="w-full rounded-md border border-border-1 h-64 sm:h-[360px]" />
       <div className="mt-3 grid grid-cols-2 gap-x-8 gap-y-1 text-[12px]">
         {m.ip && (
           <div className="dt-row">
@@ -41,6 +184,8 @@ function MapView({ scanId, onCopy }: { scanId: string; onCopy: (value: string) =
         {(m.city || m.country) && <div className="dt-row"><span className="dt-label">Location</span><span className="dt-value">{[m.city, m.country].filter(Boolean).join(', ')}</span></div>}
         {m.org && <div className="dt-row"><span className="dt-label">Organization</span><span className="dt-value">{m.org}</span></div>}
         <div className="dt-row"><span className="dt-label">Coordinates</span><span className="dt-value font-mono">{m.lat.toFixed(4)}, {m.lng.toFixed(4)}</span></div>
+        {m.precision && <div className="dt-row"><span className="dt-label">Precision</span><span className="dt-value">{m.precision}</span></div>}
+        {m.approximate && <div className="dt-row"><span className="dt-label">Approximate</span><span className="dt-value">Yes</span></div>}
       </div>
       {data.markers.length > 1 && (
         <div className="mt-3 text-[10px] text-text-3">{data.markers.length} locations found</div>
@@ -152,6 +297,62 @@ function Card({
   );
 }
 
+function modStatus(m?: (ModuleStatusFields & { error?: string | null }) | null): ModuleStatus {
+  if (!m) return 'ok';
+  if (m.status === 'skipped' || m.status === 'rate_limited' || m.status === 'error') return m.status;
+  if (m.error) return 'error';
+  return 'ok';
+}
+
+const STATUS_BADGE: Record<Exclude<ModuleStatus, 'ok'>, { label: string; color: string; hint: string }> = {
+  skipped: { label: 'SKIPPED', color: '#8b949e', hint: 'No API key configured' },
+  rate_limited: { label: 'RATE LIMITED', color: '#d29922', hint: 'Provider rate limit reached' },
+  error: { label: 'ERROR', color: '#f85149', hint: 'Module failed' },
+};
+
+function ModuleStatusBadge({ status, label }: { status: ModuleStatus; label?: string }) {
+  if (status === 'ok') return null;
+  const b = STATUS_BADGE[status];
+  return (
+    <span
+      className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border"
+      style={{ color: b.color, borderColor: `${b.color}55`, background: `${b.color}11` }}
+    >
+      {label ?? b.label}
+    </span>
+  );
+}
+
+function ModuleNotice({ status, reason }: { status: 'skipped' | 'rate_limited'; reason?: string }) {
+  const b = STATUS_BADGE[status];
+  return (
+    <div className="text-[12px]" style={{ color: status === 'rate_limited' ? b.color : undefined }}>
+      <span className="text-text-2">{reason || b.hint}</span>
+      {status === 'skipped' && (
+        <span className="text-text-3"> — add the key to <code className="font-mono">.env</code> to enable this module.</span>
+      )}
+    </div>
+  );
+}
+
+function KeyModuleCard({ title, mod, children }: {
+  title: string;
+  mod?: (ModuleStatusFields & { error?: string | null }) | null;
+  children: React.ReactNode;
+}) {
+  if (!mod) return null;
+  const st = modStatus(mod);
+  if (st === 'ok') return <Card title={title}>{children}</Card>;
+  if (st === 'skipped' || st === 'rate_limited') {
+    return (
+      <Card title={title} extra={<ModuleStatusBadge status={st} />}>
+        <ModuleNotice status={st} reason={mod.status_reason} />
+      </Card>
+    );
+  }
+  return null;
+}
+
 function CopyIconButton({ onClick, label }: { onClick: () => void; label: string }) {
   return (
     <button
@@ -179,6 +380,25 @@ function FindingRow({ f }: { f: OpsecFinding }) {
   );
 }
 
+const OPSEC_CATEGORY_INFO: Record<string, { label: string; tooltip: string }> = {
+  data_exposure: {
+    label: 'Data Exposure',
+    tooltip: 'Sensitive data leaks: breached credentials, exposed emails, public PII.',
+  },
+  identity_opsec: {
+    label: 'Identity OPSEC',
+    tooltip: 'Re-use of identifiers across platforms: same username/email across many sites.',
+  },
+  infrastructure: {
+    label: 'Infrastructure',
+    tooltip: 'Exposed services, open ports, weak DNS/WHOIS hygiene, threat-intel hits.',
+  },
+  web_security: {
+    label: 'Web Security',
+    tooltip: 'TLS, security headers, certificate transparency, archived sensitive paths.',
+  },
+};
+
 const TABS = [
   { id: 'findings', label: 'Findings', icon: Shield },
   { id: 'whois', label: 'WHOIS', icon: Globe },
@@ -202,7 +422,7 @@ const TABS = [
 interface Props { scan: ScanMeta & { results: ScanResults }; }
 
 export function ScanResults({ scan }: Props) {
-  const { t: i18n } = useTranslations();
+  const { t: i18n, locale } = useTranslations();
   const [tab, setTab] = useState('findings');
   const [aiSummary, setAiSummary] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
@@ -211,8 +431,8 @@ export function ScanResults({ scan }: Props) {
   const [chatInput, setChatInput] = useState('');
   const [chatHistory, setChatHistory] = useState<{role:'user'|'ai'; text:string}[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
-  const [aiSummaryCopied, setAiSummaryCopied] = useState(false);
   const [showJson, setShowJson] = useState(false);
+  const [showBackToTop, setShowBackToTop] = useState(false);
   const [copyToast, setCopyToast] = useState('');
   const [localResults, setLocalResults] = useState<ScanResults>(scan.results);
   const [refreshingModules, setRefreshingModules] = useState<Record<string, boolean>>({});
@@ -239,7 +459,6 @@ export function ScanResults({ scan }: Props) {
   };
 
   useEffect(() => () => {
-    if (aiSummaryCopyTimerRef.current) clearTimeout(aiSummaryCopyTimerRef.current);
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
   }, []);
 
@@ -315,24 +534,191 @@ export function ScanResults({ scan }: Props) {
     } finally { setAiLoading(false); }
   };
 
-  const copyAiSummary = async () => {
-    const summaryText = aiSummary.trim();
-    if (!summaryText) return;
+  const openReport = async (format: 'html' | 'pdf') => {
+    if (reportLoading) return;
+    setReportLoading(format);
     try {
-      await navigator.clipboard.writeText(summaryText);
-      setAiSummaryCopied(true);
-      if (aiSummaryCopyTimerRef.current) clearTimeout(aiSummaryCopyTimerRef.current);
-      aiSummaryCopyTimerRef.current = setTimeout(() => setAiSummaryCopied(false), 1500);
-    } catch {}
+      const blob = await fetchReportBlob(scan.id, format, locale);
+      const url = URL.createObjectURL(blob);
+      const opened = window.open(url, '_blank', 'noopener,noreferrer');
+      if (!opened) {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `prism-report-${scan.id}.${format === 'pdf' ? 'pdf' : 'html'}`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : 'Report open failed');
+    } finally {
+      setReportLoading(null);
+    }
   };
+
+  const downloadJson = () => {
+    try {
+      const blob = new Blob([JSON.stringify(scan.results, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `prism-${filenameSegment(scan.target)}-${filenameSegment(scan.id)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : 'JSON download failed');
+    }
+  };
+
+  const downloadCsv = () => {
+    try {
+      const rows: string[][] = [['Module', 'Key', 'Value']];
+      const flatten = (obj: unknown, prefix: string) => {
+        if (obj === null || obj === undefined) return;
+        if (Array.isArray(obj)) {
+          obj.forEach((item, i) => flatten(item, `${prefix}[${i}]`));
+        } else if (typeof obj === 'object') {
+          for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+            flatten(v, prefix ? `${prefix}.${k}` : k);
+          }
+        } else {
+          const parts = prefix.split('.');
+          const mod = parts[0] || '';
+          const key = parts.slice(1).join('.') || prefix;
+          const val = String(obj).replace(/"/g, '""');
+          rows.push([mod, key, `"${val}"`]);
+        }
+      };
+      flatten(scan.results, '');
+      const csv = rows.map(r => r.join(',')).join('\n');
+      const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `prism-${filenameSegment(scan.target)}-${filenameSegment(scan.id)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : 'CSV download failed');
+    }
+  };
+
+  const downloadMarkdown = () => {
+    try {
+      const lines: string[] = [];
+      lines.push(`# PRISM Scan Report`);
+      lines.push(`**Target:** ${scan.target}`);
+      lines.push(`**Type:** ${scan.scan_type}`);
+      if (scan.started_at) lines.push(`**Started:** ${scan.started_at.slice(0, 19).replace('T', ' ')}`);
+      if (scan.completed_at) lines.push(`**Completed:** ${scan.completed_at.slice(0, 19).replace('T', ' ')}`);
+      lines.push('');
+      if (opsec) {
+        lines.push(`## OPSEC Score: ${opsec.score}/100 (${opsec.risk_level})`);
+        for (const [k, cat] of Object.entries(opsec.categories)) {
+          lines.push(`- **${k.replace(/_/g, ' ')}:** ${cat.score}/${cat.max} (${cat.percent}%)`);
+        }
+        lines.push('');
+      }
+      if (opsec?.all_findings?.length) {
+        lines.push('## Security Findings');
+        for (const f of opsec.all_findings) {
+          lines.push(`- [${f.severity}] ${f.message} (-${f.deduction} pts)`);
+        }
+        lines.push('');
+      }
+      if (r.whois && !r.whois.error) {
+        lines.push('## WHOIS');
+        if (r.whois.registrar) lines.push(`- Registrar: ${r.whois.registrar}`);
+        if (r.whois.org) lines.push(`- Organization: ${r.whois.org}`);
+        if (r.whois.country) lines.push(`- Country: ${r.whois.country}`);
+        if (r.whois.creation_date) lines.push(`- Created: ${r.whois.creation_date.slice(0, 10)}`);
+        lines.push('');
+      }
+      if (r.dns?.records) {
+        lines.push('## DNS Records');
+        for (const [type, recs] of Object.entries(r.dns.records)) {
+          if (Array.isArray(recs) && recs.length) {
+            lines.push(`### ${type}`);
+            recs.forEach(rec => lines.push(`- ${typeof rec === 'object' ? JSON.stringify(rec) : rec}`));
+          }
+        }
+        lines.push('');
+      }
+      if (r.cert_transparency?.subdomains?.length) {
+        lines.push(`## Subdomains (${r.cert_transparency.subdomains.length})`);
+        r.cert_transparency.subdomains.forEach(s => lines.push(`- ${s}`));
+        lines.push('');
+      }
+      if (r.blackbird?.some(b => b.status === 'found')) {
+        lines.push('## Accounts Found');
+        lines.push('| Platform | URL |');
+        lines.push('|----------|-----|');
+        r.blackbird.filter(b => b.status === 'found').forEach(b => lines.push(`| ${b.site} | ${b.url} |`));
+        lines.push('');
+      }
+      const md = lines.join('\n');
+      const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `prism-${filenameSegment(scan.target)}-${filenameSegment(scan.id)}.md`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : 'Markdown download failed');
+    }
+  };
+
+  const scanDuration = (() => {
+    if (!scan.started_at || !scan.completed_at) return null;
+    const ms = new Date(scan.completed_at).getTime() - new Date(scan.started_at).getTime();
+    if (ms < 0 || !Number.isFinite(ms)) return null;
+    if (ms < 1000) return `${ms}ms`;
+    const s = ms / 1000;
+    return s < 60 ? `${s.toFixed(1)}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+  })();
+
+  const allEmails = (() => {
+    const set = new Set<string>();
+    if (r.whois?.emails) r.whois.emails.forEach(e => set.add(e));
+    if (r.emailrep?.email) set.add(r.emailrep.email);
+    if (r.breaches?.breaches) {
+      for (const b of r.breaches.breaches) {
+        if (typeof b === 'string' && b.includes('@')) set.add(b);
+        if (typeof b === 'object' && b && 'email' in b) set.add((b as any).email);
+      }
+    }
+    // Scan target if it looks like email
+    if (scan.scan_type === 'email' && scan.target?.includes('@')) set.add(scan.target);
+    return Array.from(set);
+  })();
+
+  const copyAllEmails = async () => {
+    if (!allEmails.length) return;
+    try {
+      await navigator.clipboard.writeText(allEmails.join('\n'));
+      showToast(i18n('results.emailsCopied') || 'Emails copied!');
+    } catch {
+      showToast(i18n('common.copyFailed') || 'Copy failed');
+    }
+  };
+
+  const [accountFilter, setAccountFilter] = useState('');
 
   const visibleTabs = TABS.filter(t => {
     if (t.id === 'whois') return r.whois && !r.whois.error;
     if (t.id === 'dns') return r.dns?.records && Object.keys(r.dns.records).length > 0;
     if (t.id === 'subdomains') return r.cert_transparency?.subdomains?.length;
     if (t.id === 'accounts') return r.blackbird?.some(b => b.status === 'found');
-    if (t.id === 'threats') return r.virustotal || r.abuseipdb || r.shodan;
-    if (t.id === 'censys') return r.censys && !r.censys.error;
+    if (t.id === 'threats') return [r.virustotal, r.abuseipdb, r.shodan].some(m => m && modStatus(m) !== 'error');
+    if (t.id === 'censys') return r.censys && modStatus(r.censys) === 'ok';
     if (t.id === 'darkweb') return r.onion && !r.onion.error && (r.onion.total_found ?? 0) > 0;
     if (t.id === 'wayback') return r.wayback;
     if (t.id === 'email') return r.emailrep || r.smtp || r.breaches;
@@ -341,6 +727,24 @@ export function ScanResults({ scan }: Props) {
     if (t.id === 'telegram') return r.telegram;
     return true;
   });
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        const idx = visibleTabs.findIndex(t => t.id === tab);
+        if (idx === -1) return;
+        const next = e.key === 'ArrowRight'
+          ? (idx + 1) % visibleTabs.length
+          : (idx - 1 + visibleTabs.length) % visibleTabs.length;
+        setTab(visibleTabs[next].id);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [tab, visibleTabs]);
 
   return (
     <div className="flex flex-col h-[calc(100vh-48px)] animate-fade-in">
@@ -355,17 +759,38 @@ export function ScanResults({ scan }: Props) {
             {scan.started_at && (
               <span className="text-[10px] text-text-3 hidden sm:inline">{scan.started_at.slice(0, 19).replace('T', ' ')}</span>
             )}
+            {scanDuration && (
+              <span className="text-[10px] text-green font-medium">{i18n('results.duration').replace('{duration}', scanDuration) !== `results.duration` ? i18n('results.duration').replace('{duration}', scanDuration) : `Completed in ${scanDuration}`}</span>
+            )}
           </div>
         </div>
-        <div className="flex gap-2">
-          <a href={getReportUrl(scan.id)} target="_blank" rel="noreferrer"
+        <div className="flex flex-wrap gap-2 sm:justify-end">
+          <button type="button" onClick={() => openReport('html')} disabled={reportLoading !== null}
             className="btn-ghost text-[11px] h-8 px-3">
-            <ExternalLink size={11} /> {i18n('results.htmlReport')}
-          </a>
-          <a href={getReportPdfUrl(scan.id)} target="_blank" rel="noreferrer"
+            {reportLoading === 'html' ? '…' : <ExternalLink size={11} />} {i18n('results.htmlReport')}
+          </button>
+          <button type="button" onClick={() => openReport('pdf')} disabled={reportLoading !== null}
             className="btn-ghost text-[11px] h-8 px-3">
-            <Printer size={11} /> {i18n('results.pdfReport')}
-          </a>
+            {reportLoading === 'pdf' ? '…' : <Printer size={11} />} {i18n('results.pdfReport')}
+          </button>
+          <button type="button" onClick={downloadJson}
+            className="btn-ghost text-[11px] h-8 px-3">
+            <Download size={11} /> {i18n('results.jsonReport')}
+          </button>
+          <button type="button" onClick={downloadCsv}
+            className="btn-ghost text-[11px] h-8 px-3">
+            <FileSpreadsheet size={11} /> {i18n('results.csvReport') !== 'results.csvReport' ? i18n('results.csvReport') : 'CSV'}
+          </button>
+          <button type="button" onClick={downloadMarkdown}
+            className="btn-ghost text-[11px] h-8 px-3">
+            <FileText size={11} /> {i18n('results.mdReport') !== 'results.mdReport' ? i18n('results.mdReport') : 'Markdown'}
+          </button>
+          {allEmails.length >= 2 && (
+            <button type="button" onClick={copyAllEmails}
+              className="btn-ghost text-[11px] h-8 px-3">
+              <Mail size={11} /> {i18n('results.copyAllEmails') !== 'results.copyAllEmails' ? i18n('results.copyAllEmails') : 'Copy emails'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -382,15 +807,23 @@ export function ScanResults({ scan }: Props) {
               </div>
             </div>
           </div>
-          {Object.entries(opsec.categories).map(([k, cat]) => (
-            <div key={k} className="flex items-center gap-2">
-              <div className="text-[10px] text-text-3 capitalize">{k.replace('_', ' ')}</div>
-              <div className="w-20 h-1.5 rounded-full bg-surface-3 overflow-hidden">
-                <div className="h-full rounded-full" style={{ width: `${cat.percent}%`, background: cat.percent > 60 ? '#3fb950' : cat.percent > 30 ? '#d29922' : '#f85149' }} />
+          {Object.entries(opsec.categories).map(([k, cat]) => {
+            const info = OPSEC_CATEGORY_INFO[k];
+            const label = info?.label ?? k.replace(/_/g, ' ');
+            const tooltip = info?.tooltip ?? '';
+            return (
+              <div key={k} className="flex items-center gap-2" title={tooltip}>
+                <div className="text-[10px] text-text-3 capitalize flex items-center gap-1 cursor-help">
+                  {label}
+                  {tooltip && <span aria-hidden className="opacity-60">ⓘ</span>}
+                </div>
+                <div className="w-20 h-1.5 rounded-full bg-surface-3 overflow-hidden">
+                  <div className="h-full rounded-full" style={{ width: `${cat.percent}%`, background: cat.percent > 60 ? '#3fb950' : cat.percent > 30 ? '#d29922' : '#f85149' }} />
+                </div>
+                <div className="text-[10px] font-mono text-text-2">{cat.score}/{cat.max}</div>
               </div>
-              <div className="text-[10px] font-mono text-text-2">{cat.score}/{cat.max}</div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -403,7 +836,7 @@ export function ScanResults({ scan }: Props) {
         ))}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-5">
+      <div ref={contentRef} className={`flex-1 overflow-y-auto p-5 ${showBackToTop ? 'pb-24' : ''}`}>
 
         {tab === 'findings' && (
           <div>
@@ -493,7 +926,7 @@ export function ScanResults({ scan }: Props) {
               <thead><tr className="text-left text-text-3 text-[10px] uppercase tracking-wider border-b border-border-1">
                 <th className="pb-2">Platform</th><th className="pb-2">URL</th><th className="pb-2 text-right">Time</th>
               </tr></thead>
-              <tbody>{r.blackbird?.filter(b => b.status === 'found').map(b => (
+              <tbody>{r.blackbird?.filter(b => b.status === 'found' && (!accountFilter || b.site.toLowerCase().includes(accountFilter.toLowerCase()))).map(b => (
                 <tr key={b.site} className="border-b border-border-1 last:border-0">
                   <td className="py-2 font-medium text-text-1">{b.site}</td>
                   <td className="py-2">
@@ -535,11 +968,7 @@ export function ScanResults({ scan }: Props) {
                     <span className="font-black" style={{ color: (r.abuseipdb.abuse_score ?? 0) >= 50 ? '#f85149' : (r.abuseipdb.abuse_score ?? 0) >= 10 ? '#d29922' : '#3fb950' }}>
                       {r.abuseipdb.abuse_score}/100
                     </span>
-                  </div>
-                  <DtRow label="Total Reports" value={r.abuseipdb.total_reports} />
-                  <DtRow label="ISP" value={r.abuseipdb.isp} />
-                  <DtRow label="Usage Type" value={r.abuseipdb.usage_type} />
-                  {r.abuseipdb.is_tor && <div className="text-red text-[12px] font-semibold mt-1">⚠ TOR Exit Node</div>}
+                  ))}
                 </div>
               </Card>
             )}
@@ -570,10 +999,10 @@ export function ScanResults({ scan }: Props) {
         {tab === 'censys' && r.censys && !r.censys.error && (
           <Card title={`Censys — ${r.censys.domain ? 'Certificate Search' : 'Host Info'}`} onRefresh={() => refreshModule('censys')} refreshing={isRefreshing('censys')}>
             <div className="space-y-1.5">
-              {r.censys.ip && <div className="dt-row"><span className="dt-label">IP</span><span className="dt-value">{r.censys.ip}</span></div>}
-              {r.censys.asn && <div className="dt-row"><span className="dt-label">ASN</span><span className="dt-value">AS{r.censys.asn} {r.censys.as_name ?? ''}</span></div>}
-              {r.censys.country && <div className="dt-row"><span className="dt-label">Location</span><span className="dt-value">{[r.censys.city, r.censys.country].filter(Boolean).join(', ')}</span></div>}
-              {r.censys.open_ports && r.censys.open_ports.length > 0 && (
+              {r.censys?.ip && <div className="dt-row"><span className="dt-label">IP</span><span className="dt-value">{r.censys.ip}</span></div>}
+              {r.censys?.asn && <div className="dt-row"><span className="dt-label">ASN</span><span className="dt-value">AS{r.censys.asn} {r.censys.as_name ?? ''}</span></div>}
+              {r.censys?.country && <div className="dt-row"><span className="dt-label">Location</span><span className="dt-value">{[r.censys.city, r.censys.country].filter(Boolean).join(', ')}</span></div>}
+              {r.censys?.open_ports && r.censys.open_ports.length > 0 && (
                 <div className="dt-row"><span className="dt-label">Open Ports</span>
                   <div className="flex flex-wrap gap-1">
                     {r.censys.open_ports.map(p => (
@@ -585,7 +1014,7 @@ export function ScanResults({ scan }: Props) {
                   </div>
                 </div>
               )}
-              {r.censys.subdomains && r.censys.subdomains.length > 0 && (
+              {r.censys?.subdomains && r.censys.subdomains.length > 0 && (
                 <div className="dt-row"><span className="dt-label">Subdomains ({r.censys.subdomains.length})</span>
                   <div className="flex flex-wrap gap-1">
                     {r.censys.subdomains.map(s => (
@@ -597,7 +1026,7 @@ export function ScanResults({ scan }: Props) {
                   </div>
                 </div>
               )}
-              {r.censys.services && r.censys.services.length > 0 && (
+              {r.censys?.services && r.censys.services.length > 0 && (
                 <div className="mt-3">
                   <div className="text-[10px] text-text-3 uppercase tracking-wider mb-2">Services</div>
                   <table className="w-full text-[12px]">
@@ -615,7 +1044,7 @@ export function ScanResults({ scan }: Props) {
                 </div>
               )}
             </div>
-          </Card>
+          </KeyModuleCard>
         )}
 
         {tab === 'darkweb' && r.onion && (
@@ -760,11 +1189,11 @@ export function ScanResults({ scan }: Props) {
                         ))}
                       </div>
                     </div>
-                  )}
-                  {r.breaches.total !== undefined && <DtRow label="Total Breaches" value={r.breaches.total} />}
-                </div>
-              </Card>
-            )}
+                  </div>
+                )}
+                {r.breaches?.total !== undefined && <DtRow label="Total Breaches" value={r.breaches.total} />}
+              </div>
+            </KeyModuleCard>
           </div>
         )}
 
@@ -871,17 +1300,8 @@ export function ScanResults({ scan }: Props) {
               {aiSummary && (
                 <div>
                   {aiModel && <div className="text-[10px] text-text-3 mb-3 font-mono">Model: {aiModel}</div>}
-                  <div className="mb-2 flex items-center justify-end gap-2">
-                    {aiSummaryCopied && <span className="text-[11px] text-text-3">Copied!</span>}
-                    <button
-                      type="button"
-                      onClick={copyAiSummary}
-                      className="text-text-3 hover:text-text-1 transition-colors p-1 rounded-sm hover:bg-surface-2"
-                      title="Copy summary"
-                      aria-label="Copy summary"
-                    >
-                      <Copy size={12} />
-                    </button>
+                  <div className="mb-2 flex items-center justify-end">
+                    <CopyIconButton onClick={() => copyValue(aiSummary)} label="Copy summary" />
                   </div>
                   <div className="text-[13px] text-text-1 leading-relaxed whitespace-pre-wrap">{aiSummary}</div>
                   <button onClick={runAi} className="btn-ghost h-8 px-3 text-[11px] mt-4">Regenerate</button>
@@ -937,8 +1357,30 @@ export function ScanResults({ scan }: Props) {
           </div>
         )}
       </div>
+      {showBackToTop && (
+        <div className="fixed bottom-8 right-8 z-50 group">
+          <button
+            type="button"
+            onClick={() => {
+              const el = contentRef.current;
+              if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
+              else window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            aria-label="Back to top"
+            title="Back to top"
+            className="flex items-center justify-center w-12 h-12 rounded-full bg-blue hover:bg-blue/90 text-white shadow-lg hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-blue/50 focus:ring-offset-2 focus:ring-offset-surface-1 transition-all duration-200 hover:scale-110 active:scale-95"
+          >
+            <ArrowUp size={20} strokeWidth={2.5} />
+            <span className="sr-only">Back to top</span>
+          </button>
+          <div className="absolute -top-12 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none whitespace-nowrap">
+            <div className="px-3 py-1.5 rounded-md bg-surface-1 border border-border-1 text-[11px] font-semibold text-text-1 shadow-lg">Back to top</div>
+          </div>
+        </div>
+      )}
+
       {copyToast && (
-        <div className="fixed bottom-4 right-4 z-[70] px-3 py-1.5 rounded border border-border-1 bg-surface-2 text-[11px] font-semibold text-text-1 shadow-xl">
+        <div className={`fixed ${showBackToTop ? 'bottom-20' : 'bottom-4'} right-4 z-[70] px-3 py-1.5 rounded border border-border-1 bg-surface-2 text-[11px] font-semibold text-text-1 shadow-xl`}>
           {copyToast}
         </div>
       )}

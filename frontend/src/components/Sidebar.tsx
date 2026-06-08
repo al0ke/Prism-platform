@@ -1,7 +1,8 @@
 'use client';
-import { useState, useEffect } from 'react';
-import { Play, Loader2, ChevronDown, ChevronUp, Lightbulb, RotateCcw, Trash2 } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Play, Loader2, ChevronDown, ChevronUp, Lightbulb, RotateCcw, Trash2, History, GitCompare } from 'lucide-react';
 import { useTranslations } from '@/lib/i18n';
+import { listScans, type ScanListItem } from '@/lib/api';
 import type { ScanType } from '@/lib/types';
 
 const TYPE_COLOR: Record<ScanType, string> = {
@@ -14,27 +15,23 @@ const TYPE_COLOR: Record<ScanType, string> = {
 
 interface RecentScan { target: string; type: ScanType; ts: number; }
 
-const TIPS = [
-  'Scan domains, IPs, emails, phones & usernames',
-  'Toggle modules to customize each scan',
-  'Download HTML reports from scan results',
-  'Graph tab shows entity relationships',
-  'Map tab shows GeoIP location data',
-  'Use Dorks module to find exposed files',
-  'OPSEC score rates target exposure risk',
-];
+const SCAN_TYPES: ScanType[] = ['domain', 'ip', 'email', 'phone', 'username'];
 
-function useTip() {
-  const [idx, setIdx] = useState(0);
-  const [visible, setVisible] = useState(true);
-  useEffect(() => {
-    const iv = setInterval(() => {
-      setVisible(false);
-      setTimeout(() => { setIdx(i => (i + 1) % TIPS.length); setVisible(true); }, 350);
-    }, 4000);
-    return () => clearInterval(iv);
-  }, []);
-  return { tip: TIPS[idx], visible };
+const MODULE_MAP: Record<ScanType, string[]> = {
+  domain:   ['whois', 'dns', 'geoip', 'cert_transparency', 'website', 'wayback', 'shodan', 'virustotal', 'censys', 'onion'],
+  ip:       ['geoip', 'shodan', 'virustotal', 'abuseipdb', 'censys'],
+  email:    ['emailrep', 'smtp', 'leaks'],
+  phone:    ['hlr'],
+  username: ['blackbird', 'maigret'],
+};
+
+interface Props {
+  onScan: (target: string, type: ScanType, modules: string[]) => void;
+  onLoadScan?: (scanId: string) => void;
+  onCompare?: (a: string, b: string) => void;
+  isRunning: boolean;
+  isOpen: boolean;
+  onClose: () => void;
 }
 
 function useRecentScans() {
@@ -58,50 +55,61 @@ function useRecentScans() {
   return { recents, add, clear };
 }
 
-const MODULE_MAP: Record<ScanType, { id: string; label: string }[]> = {
-  domain: [
-    { id: 'whois', label: 'WHOIS' }, { id: 'dns', label: 'DNS' },
-    { id: 'geoip', label: 'GeoIP' }, { id: 'cert_transparency', label: 'Cert CT' },
-    { id: 'website', label: 'Website' }, { id: 'wayback', label: 'Wayback' },
-    { id: 'shodan', label: 'Shodan' }, { id: 'virustotal', label: 'VirusTotal' },
-    { id: 'censys', label: 'Censys' }, { id: 'onion', label: 'Dark Web' },
-  ],
-  ip: [
-    { id: 'geoip', label: 'GeoIP' }, { id: 'shodan', label: 'Shodan' },
-    { id: 'virustotal', label: 'VirusTotal' }, { id: 'abuseipdb', label: 'AbuseIPDB' },
-    { id: 'censys', label: 'Censys' },
-  ],
-  email: [
-    { id: 'emailrep', label: 'Email Rep' }, { id: 'smtp', label: 'SMTP Verify' },
-    { id: 'leaks', label: 'Breach Check' },
-  ],
-  phone: [
-    { id: 'hlr', label: 'Phone Lookup' },
-  ],
-  username: [
-    { id: 'blackbird', label: 'Blackbird' }, { id: 'maigret', label: 'Maigret' },
-  ],
-};
-
-interface Props {
-  onScan: (target: string, type: ScanType, modules: string[]) => void;
-  isRunning: boolean;
-  isOpen: boolean;
-  onClose: () => void;
-}
-
-export function Sidebar({ onScan, isRunning, isOpen, onClose }: Props) {
+export function Sidebar({ onScan, onLoadScan, onCompare, isRunning, isOpen, onClose }: Props) {
   const { t } = useTranslations();
   const [target, setTarget] = useState('');
   const [scanType, setScanType] = useState<ScanType>('domain');
-  const [modules, setModules] = useState<string[]>(MODULE_MAP.domain.map(m => m.id));
+  const [modules, setModules] = useState<string[]>(MODULE_MAP.domain);
   const [showModules, setShowModules] = useState(false);
-  const { tip, visible } = useTip();
+  const [tipIdx, setTipIdx] = useState(0);
+  const [tipVisible, setTipVisible] = useState(true);
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState<ScanListItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareSelection, setCompareSelection] = useState<string[]>([]);
   const { recents, add: addRecent, clear: clearRecents } = useRecentScans();
 
-  const handleTypeChange = (t: ScanType) => {
-    setScanType(t);
-    setModules(MODULE_MAP[t].map(m => m.id));
+  useEffect(() => {
+    const iv = setInterval(() => {
+      setTipVisible(false);
+      setTimeout(() => { setTipIdx(i => (i + 1) % SCAN_TYPES.length); setTipVisible(true); }, 350);
+    }, 4000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const fetchHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const items = await listScans();
+      setHistory(items);
+    } catch {
+      setHistory([]);
+    }
+    setHistoryLoading(false);
+  };
+
+  const toggleHistory = () => {
+    const next = !showHistory;
+    setShowHistory(next);
+    if (next) fetchHistory();
+  };
+
+  const prevRunning = useRef(isRunning);
+  useEffect(() => {
+    if (prevRunning.current && !isRunning && showHistory) fetchHistory();
+    prevRunning.current = isRunning;
+  }, [isRunning, showHistory]);
+
+  const toggleCompareSelect = (id: string) => {
+    setCompareSelection(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : prev.length < 2 ? [...prev, id] : [prev[1], id]
+    );
+  };
+
+  const handleTypeChange = (type: ScanType) => {
+    setScanType(type);
+    setModules(MODULE_MAP[type]);
   };
 
   const toggleModule = (id: string) => {
@@ -121,6 +129,8 @@ export function Sidebar({ onScan, isRunning, isOpen, onClose }: Props) {
     handleTypeChange(r.type);
   };
 
+  const tip = t(`sidebar.tips.${tipIdx}`) || t('sidebar.tips.0');
+
   return (
     <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-surface-1 border-r border-border-1 flex flex-col h-screen transform transition-transform duration-200 ease-in-out md:relative md:z-auto md:transform-none ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}>
       <button onClick={onClose} className="absolute top-3 right-3 md:hidden text-text-3 hover:text-text-1 p-1">✕</button>
@@ -139,17 +149,17 @@ export function Sidebar({ onScan, isRunning, isOpen, onClose }: Props) {
         <div>
           <label className="text-[10px] font-semibold text-text-3 uppercase tracking-wider block mb-1.5">{t('sidebar.scanType')}</label>
           <div className="grid grid-cols-3 gap-1">
-            {(['domain','ip','email','phone','username'] as ScanType[]).map(t => (
+            {SCAN_TYPES.map(type => (
               <button
-                key={t}
+                key={type}
                 type="button"
-                onClick={() => handleTypeChange(t)}
+                onClick={() => handleTypeChange(type)}
                 className={`text-[10px] font-semibold py-1.5 rounded transition-all ${
-                  scanType === t ? 'text-white' : 'bg-surface-3 text-text-3 hover:text-text-2'
+                  scanType === type ? 'text-white' : 'bg-surface-3 text-text-3 hover:text-text-2'
                 }`}
-                style={scanType === t ? { background: 'linear-gradient(135deg,#4f8ef7,#7c5cfc)' } : {}}
+                style={scanType === type ? { background: 'linear-gradient(135deg,#4f8ef7,#7c5cfc)' } : {}}
               >
-                {t.toUpperCase()}
+                {t(`sidebar.scanTypes.${type}`)}
               </button>
             ))}
           </div>
@@ -160,24 +170,24 @@ export function Sidebar({ onScan, isRunning, isOpen, onClose }: Props) {
           onClick={() => setShowModules(v => !v)}
           className="flex items-center justify-between text-[10px] font-semibold text-text-3 uppercase tracking-wider hover:text-text-2 transition-colors"
         >
-          {t('sidebar.modules')} ({modules.length}/{MODULE_MAP[scanType].length})
+          {t('sidebar.modulesTitle')} ({modules.length}/{MODULE_MAP[scanType].length})
           {showModules ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
         </button>
 
         {showModules && (
           <div className="flex flex-wrap gap-1.5 animate-fade-in">
-            {MODULE_MAP[scanType].map(m => (
+            {MODULE_MAP[scanType].map(moduleId => (
               <button
-                key={m.id}
+                key={moduleId}
                 type="button"
-                onClick={() => toggleModule(m.id)}
+                onClick={() => toggleModule(moduleId)}
                 className={`text-[10px] px-2 py-1 rounded transition-all font-medium ${
-                  modules.includes(m.id)
+                  modules.includes(moduleId)
                     ? 'bg-blue/20 text-blue border border-blue/30'
                     : 'bg-surface-3 text-text-3 border border-border-1 hover:text-text-2'
                 }`}
               >
-                {m.label}
+                {t(`sidebar.modules.${moduleId}`)}
               </button>
             ))}
           </div>
@@ -230,12 +240,89 @@ export function Sidebar({ onScan, isRunning, isOpen, onClose }: Props) {
         </div>
       </div>
 
+      <div className="border-t border-border-1 px-4 py-2">
+        <button
+          onClick={toggleHistory}
+          className="flex items-center justify-between w-full text-[10px] font-semibold text-text-3 uppercase tracking-wider hover:text-text-2 transition-colors mb-1"
+        >
+          <span className="flex items-center gap-1.5"><History size={10} /> {t('sidebar.history')}</span>
+          {showHistory ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </button>
+        {showHistory && (
+          <div className="animate-fade-in">
+            {compareMode && compareSelection.length === 2 && onCompare && (
+              <button
+                onClick={() => { onCompare(compareSelection[0], compareSelection[1]); setCompareMode(false); setCompareSelection([]); }}
+                className="btn-primary w-full text-[10px] py-1 mb-2"
+              >
+                <GitCompare size={10} /> {t('sidebar.compareSelected')}
+              </button>
+            )}
+            <div className="flex items-center gap-1 mb-1.5">
+              <button
+                onClick={() => { setCompareMode(v => !v); setCompareSelection([]); }}
+                className={`text-[9px] px-1.5 py-0.5 rounded transition-all font-medium ${
+                  compareMode ? 'bg-purple/20 text-purple border border-purple/30' : 'bg-surface-3 text-text-3 border border-border-1 hover:text-text-2'
+                }`}
+              >
+                <span className="flex items-center gap-1"><GitCompare size={8} /> {t('sidebar.compare')}</span>
+              </button>
+              <button onClick={fetchHistory} className="text-text-3 hover:text-text-2 transition-colors ml-auto">
+                <RotateCcw size={10} className={historyLoading ? 'spin' : ''} />
+              </button>
+            </div>
+            {historyLoading ? (
+              <div className="flex justify-center py-2"><Loader2 size={14} className="spin text-text-3" /></div>
+            ) : history.length === 0 ? (
+              <div className="text-[10px] text-text-3 opacity-40 italic">{t('sidebar.noHistory')}</div>
+            ) : (
+              <div className="flex flex-col gap-0.5 max-h-40 overflow-y-auto">
+                {history.map(h => {
+                  const selected = compareSelection.includes(h.scan_id);
+                  return (
+                    <button
+                      key={h.scan_id}
+                      onClick={() => compareMode ? toggleCompareSelect(h.scan_id) : onLoadScan?.(h.scan_id)}
+                      className={`flex items-center gap-2 w-full text-left px-2 py-1.5 rounded transition-colors group ${
+                        selected ? 'bg-purple/15 border border-purple/30' : 'hover:bg-surface-3'
+                      }`}
+                    >
+                      {compareMode && (
+                        <span className={`w-3 h-3 rounded-sm border shrink-0 flex items-center justify-center text-[8px] ${
+                          selected ? 'bg-purple border-purple text-white' : 'border-border-1'
+                        }`}>
+                          {selected ? '✓' : ''}
+                        </span>
+                      )}
+                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase shrink-0 ${
+                        TYPE_COLOR[h.scan_type as ScanType] || 'bg-surface-3 text-text-3'
+                      }`}>
+                        {h.scan_type.slice(0, 2)}
+                      </span>
+                      <div className="flex flex-col min-w-0">
+                        <span className="text-[11px] text-text-2 truncate font-mono group-hover:text-text-1 transition-colors">
+                          {h.target}
+                        </span>
+                        <span className="text-[8px] text-text-3">
+                          {h.status === 'completed' ? '✓' : h.status === 'running' ? '…' : '✗'}{' '}
+                          {new Date(h.started_at).toLocaleDateString()}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="border-t border-border-1 px-3 py-2.5">
         <div className="flex items-start gap-1.5">
           <Lightbulb size={9} className="text-yellow opacity-60 mt-0.5 shrink-0" />
           <span
             className="text-[9px] text-text-3 leading-relaxed"
-            style={{ opacity: visible ? 0.6 : 0, transition: 'opacity 0.3s ease' }}
+            style={{ opacity: tipVisible ? 0.6 : 0, transition: 'opacity 0.3s ease' }}
           >
             {tip}
           </span>

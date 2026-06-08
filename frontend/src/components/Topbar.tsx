@@ -1,8 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Loader2, CheckCircle, XCircle, Github, Terminal, Sun, Moon, Menu, Languages } from 'lucide-react';
+import { Loader2, CheckCircle, XCircle, Github, Terminal, Sun, Moon, Menu, Languages, Book } from 'lucide-react';
 import { useTheme } from '@/lib/useTheme';
-import { useTranslations } from '@/lib/i18n';
+import { useTranslations, SUPPORTED_LOCALES } from '@/lib/i18n';
 import { Logo } from './Logo';
 import type { ScanStatus } from '@/lib/types';
 
@@ -49,7 +49,7 @@ export function Topbar({ status, onHome, onMenuToggle }: Props) {
           className="text-[9px] font-bold tracking-widest px-1.5 py-0.5 rounded-full text-white"
           style={{ background: 'linear-gradient(135deg,#4f8ef7,#7c5cfc)' }}
         >
-          v2.1
+          v2.3.0
         </span>
       </button>
 
@@ -86,22 +86,36 @@ export function Topbar({ status, onHome, onMenuToggle }: Props) {
         )}
         <div className="w-px h-4 bg-border-1" />
         <button
-          onClick={() => setLocale(locale === 'en' ? 'ru' : 'en')}
+          onClick={() => {
+            const idx = SUPPORTED_LOCALES.indexOf(locale);
+            const next = SUPPORTED_LOCALES[(idx + 1) % SUPPORTED_LOCALES.length];
+            setLocale(next);
+          }}
           className="flex items-center gap-1 text-text-3 hover:text-text-1 transition-colors p-1.5 rounded-sm hover:bg-surface-2 text-[10px] font-bold uppercase tracking-wider"
           title={t('lang.label')}
           aria-label="Toggle language"
         >
           <Languages size={13} />
-          <span className="hidden sm:inline">{locale === 'en' ? 'EN' : 'RU'}</span>
+          <span className="hidden sm:inline">{locale.toUpperCase()}</span>
         </button>
         <button
           onClick={toggleTheme}
           className="text-text-3 hover:text-text-1 transition-colors p-1.5 rounded-sm hover:bg-surface-2"
-          title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+          title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme (Alt+T)`}
           aria-label="Toggle theme"
         >
           {mounted ? (theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />) : <Sun size={15} />}
         </button>
+        <a
+          href="https://github.com/NovaCode37/Prism-platform#api"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-text-3 hover:text-text-1 transition-colors"
+          title="API Documentation"
+          aria-label="API Documentation"
+        >
+          <Book size={15} />
+        </a>
         <a
           href="https://github.com/NovaCode37/Prism-platform"
           target="_blank"

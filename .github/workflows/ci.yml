@@ -32,7 +32,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-cov flake8
+          pip install pytest pytest-cov pytest-asyncio flake8
 
       - name: Lint with flake8 (critical errors only)
         run: |
@@ -70,7 +70,7 @@ jobs:
 
       - name: Smoke test Docker image
         run: |
-          docker run -d --name osint-test -p 8080:8080 osint-toolkit:${{ github.sha }}
+          docker run -d --name osint-test -p 8080:8080 -e ALLOW_ANON_API=true osint-toolkit:${{ github.sha }}
           sleep 10
           curl --fail http://localhost:8080/ || (docker logs osint-test && exit 1)
           docker stop osint-test

@@ -44,21 +44,24 @@ class TestOnionChecker:
 
         monkeypatch.setattr(requests, "get", raise_network)
         result = OnionChecker(timeout=1).check("example.com")
-        # Should still succeed with empty results
+                                                 
         assert result["error"] is None
         assert result["total_found"] == 0
 
 
 class TestCensysLookup:
-    def test_no_credentials_returns_error(self, monkeypatch):
+    def test_no_credentials_returns_skipped(self, monkeypatch):
         monkeypatch.setattr("modules.censys_lookup.CENSYS_API_ID", "")
         monkeypatch.setattr("modules.censys_lookup.CENSYS_API_SECRET", "")
         from modules.censys_lookup import CensysLookup
+        from modules.module_status import classify, SKIPPED
         cl = CensysLookup()
         cl.api_id = ""
         cl.api_secret = ""
         result = cl.search_ip("8.8.8.8")
-        assert "not set" in (result.get("error") or "")
+        assert classify(result) == SKIPPED
+        assert result.get("error") is None
+        assert "API key" in result.get("status_reason", "")
 
     def test_search_ip_success(self, monkeypatch):
         import requests
@@ -132,16 +135,18 @@ class TestCensysLookup:
 
 
 class TestPdfReport:
-    def test_pdf_generation_requires_weasyprint(self, monkeypatch):
-        # If weasyprint is installed in the dev env this passes the import,
-        # otherwise it raises ImportError with a helpful message.
-        from modules.report_generator import generate_pdf_report
-        try:
-            import weasyprint  # noqa: F401
-            installed = True
-        except ImportError:
-            installed = False
+    def test_pdf_generation_requires_xhtml2pdf(self, monkeypatch):
+        import builtins
 
-        if not installed:
-            with pytest.raises(ImportError, match="weasyprint"):
-                generate_pdf_report("example.com", "domain", {}, None)
+        from modules.report_generator import generate_pdf_report
+
+        real_import = builtins.__import__
+
+        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "xhtml2pdf" or name.startswith("xhtml2pdf."):
+                raise ImportError("xhtml2pdf not installed")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        with pytest.raises(ImportError, match="xhtml2pdf"):
+            generate_pdf_report("example.com", "domain", {}, None)
