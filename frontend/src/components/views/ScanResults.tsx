@@ -108,7 +108,7 @@ function MapView({ scanId, onCopy }: { scanId: string; onCopy: (value: string) =
             const sw: [number, number] = [m.bbox![0], m.bbox![2]];
             const ne: [number, number] = [m.bbox![1], m.bbox![3]];
             L.rectangle([sw, ne], { color: '#4f8ef7', weight: 1, fillColor: '#4f8ef7', fillOpacity: 0.10 })
-              .bindPopup(`${popup}<br/><i>Approximate ${escapeHtml(m.precision || 'area')}-level — phone numbers don't expose an exact location</i>`)
+              .bindPopup(`${popup}<br/><i>Approximate ${escapeHtml(m.precision || 'area')}-level - phone numbers don't expose an exact location</i>`)
               .addTo(markersRef.current);
             bounds.push(sw, ne);
           } else if (m.approximate) {
@@ -149,7 +149,7 @@ function MapView({ scanId, onCopy }: { scanId: string; onCopy: (value: string) =
   }, []);
 
   if (error) return <div className="text-red text-sm">{error}</div>;
-  if (!data) return <div className="text-text-3 text-sm animate-pulse">Loading map…</div>;
+  if (!data) return <div className="text-text-3 text-sm animate-pulse">Loading map...</div>;
   if (!data.markers?.length) {
     if (data.info && (data.info.country || data.info.carrier || data.info.region)) {
       return (
@@ -239,7 +239,7 @@ function GraphView({ scanId }: { scanId: string }) {
 
   return (
     <div>
-      {status === 'loading' && <div className="text-text-3 text-sm animate-pulse py-4">Loading graph…</div>}
+      {status === 'loading' && <div className="text-text-3 text-sm animate-pulse py-4">Loading graph...</div>}
       {status === 'empty' && (
         <div className="flex flex-col items-center justify-center py-12 text-center">
           <GitBranch size={28} className="text-text-3 opacity-40 mb-2" />
@@ -280,7 +280,7 @@ function Card({ title, extra, children, onRefresh, refreshing = false }: { title
                 onClick={onRefresh}
                 disabled={refreshing}
                 className="text-text-3 hover:text-text-1 transition-colors p-1 rounded-sm hover:bg-surface-2 disabled:cursor-wait disabled:opacity-70"
-                title={refreshing ? 'Refreshing…' : 'Refresh module'}
+                title={refreshing ? 'Refreshing...' : 'Refresh module'}
                 aria-label={refreshing ? 'Refreshing module' : 'Refresh module'}
               >
                 {refreshing ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
@@ -326,7 +326,7 @@ function ModuleNotice({ status, reason }: { status: 'skipped' | 'rate_limited'; 
     <div className="text-[12px]" style={{ color: status === 'rate_limited' ? b.color : undefined }}>
       <span className="text-text-2">{reason || b.hint}</span>
       {status === 'skipped' && (
-        <span className="text-text-3"> — add the key to <code className="font-mono">.env</code> to enable this module.</span>
+        <span className="text-text-3"> - add the key to <code className="font-mono">.env</code> to enable this module.</span>
       )}
     </div>
   );
@@ -775,11 +775,11 @@ export function ScanResults({ scan }: Props) {
         <div className="flex flex-wrap gap-2 sm:justify-end">
           <button type="button" onClick={() => openReport('html')} disabled={reportLoading !== null}
             className="btn-ghost text-[11px] h-8 px-3">
-            {reportLoading === 'html' ? '…' : <ExternalLink size={11} />} {i18n('results.htmlReport')}
+            {reportLoading === 'html' ? '...' : <ExternalLink size={11} />} {i18n('results.htmlReport')}
           </button>
           <button type="button" onClick={() => openReport('pdf')} disabled={reportLoading !== null}
             className="btn-ghost text-[11px] h-8 px-3">
-            {reportLoading === 'pdf' ? '…' : <Printer size={11} />} {i18n('results.pdfReport')}
+            {reportLoading === 'pdf' ? '...' : <Printer size={11} />} {i18n('results.pdfReport')}
           </button>
           <button type="button" onClick={downloadJson}
             className="btn-ghost text-[11px] h-8 px-3">
@@ -934,7 +934,7 @@ export function ScanResults({ scan }: Props) {
         )}
 
         {tab === 'subdomains' && r.cert_transparency && (
-          <Card title={`Certificate Transparency — ${r.cert_transparency.subdomains?.length} subdomains`} onRefresh={() => refreshModule('cert_transparency')} refreshing={isRefreshing('cert_transparency')}>
+          <Card title={`Certificate Transparency - ${r.cert_transparency.subdomains?.length} subdomains`} onRefresh={() => refreshModule('cert_transparency')} refreshing={isRefreshing('cert_transparency')}>
             <div className="text-[11px] text-text-3 mb-3">{r.cert_transparency.total_certs} certificate(s) analysed</div>
             <div className="flex flex-wrap gap-1">
               {r.cert_transparency.subdomains?.map(s => (
@@ -1081,7 +1081,7 @@ export function ScanResults({ scan }: Props) {
         )}
 
         {tab === 'censys' && (
-          <KeyModuleCard title={`Censys — ${r.censys?.domain ? 'Certificate Search' : 'Host Info'}`} mod={r.censys} onRefresh={() => refreshModule('censys')} refreshing={isRefreshing('censys')}>
+          <KeyModuleCard title={`Censys - ${r.censys?.domain ? 'Certificate Search' : 'Host Info'}`} mod={r.censys} onRefresh={() => refreshModule('censys')} refreshing={isRefreshing('censys')}>
             <div className="space-y-1.5">
               {r.censys?.ip && <div className="dt-row"><span className="dt-label">IP</span><span className="dt-value">{r.censys.ip}</span></div>}
               {r.censys?.asn && <div className="dt-row"><span className="dt-label">ASN</span><span className="dt-value">AS{r.censys.asn} {r.censys.as_name ?? ''}</span></div>}
@@ -1120,8 +1120,8 @@ export function ScanResults({ scan }: Props) {
                     <tbody>{r.censys.services.map((s, i) => (
                       <tr key={i} className="border-b border-border-1 last:border-0">
                         <td className="py-1.5 font-mono">{s.port}/{s.transport ?? 'tcp'}</td>
-                        <td className="py-1.5">{s.service ?? '—'}</td>
-                        <td className="py-1.5 text-text-3">{s.software ?? '—'}</td>
+                        <td className="py-1.5">{s.service ?? '-'}</td>
+                        <td className="py-1.5 text-text-3">{s.software ?? '-'}</td>
                       </tr>
                     ))}</tbody>
                   </table>
@@ -1132,7 +1132,7 @@ export function ScanResults({ scan }: Props) {
         )}
 
         {tab === 'darkweb' && r.onion && (
-          <Card title={`Dark Web Mirrors — ${r.onion.total_found} found`} onRefresh={() => refreshModule('onion')} refreshing={isRefreshing('onion')}>
+          <Card title={`Dark Web Mirrors - ${r.onion.total_found} found`} onRefresh={() => refreshModule('onion')} refreshing={isRefreshing('onion')}>
             <div className="text-[11px] text-text-3 mb-3">
               Sources: Ahmia ({r.onion.sources?.ahmia ?? 0}) · DarkSearch ({r.onion.sources?.darksearch ?? 0})
             </div>
@@ -1375,7 +1375,7 @@ export function ScanResults({ scan }: Props) {
               {aiLoading && (
                 <div className="flex items-center gap-2 text-text-2 text-sm">
                   <span className="inline-block w-2 h-2 rounded-full bg-blue animate-pulse" />
-                  Generating analysis…
+                  Generating analysis...
                 </div>
               )}
               {aiError && <div className="text-red text-sm">{aiError}</div>}
@@ -1423,7 +1423,7 @@ export function ScanResults({ scan }: Props) {
                   value={chatInput}
                   onChange={e => setChatInput(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendChat()}
-                  placeholder="Ask anything about this scan…"
+                  placeholder="Ask anything about this scan..."
                   className="input-field flex-1 text-[12px]"
                   disabled={chatLoading}
                 />

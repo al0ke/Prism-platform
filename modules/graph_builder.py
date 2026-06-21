@@ -17,7 +17,7 @@ NODE_COLORS = {
 def _node(node_id: str, label: str, node_type: str, title: str = "") -> Dict:
     return {
         "id": node_id,
-        "label": label[:30] + ("…" if len(label) > 30 else ""),
+        "label": label[:30] + ("..." if len(label) > 30 else ""),
         "full_label": label,
         "type": node_type,
         "color": NODE_COLORS.get(node_type, "#dfe6e9"),

@@ -84,7 +84,7 @@ class TelegramLookup:
             result["status"] = OK
 
         except requests.exceptions.ConnectionError:
-            return annotate(result, ERROR, "Connection error — Telegram may be blocked. Try with VPN.")
+            return annotate(result, ERROR, "Connection error - Telegram may be blocked. Try with VPN.")
         except Exception as e:
             return annotate(result, ERROR, str(e))
 
@@ -123,7 +123,7 @@ class TelegramLookup:
             except Exception as e:
                 result["error"] = str(e)
         else:
-            annotate(result, SKIPPED, "ID lookup requires TELEGRAM_BOT_TOKEN — add to .env")
+            annotate(result, SKIPPED, "ID lookup requires TELEGRAM_BOT_TOKEN - add to .env")
             result["hint"] = "Create a bot via @BotFather (free) and add the token to .env"
 
         return result

@@ -24,8 +24,8 @@ function toLiveStatus(status: unknown): LiveModuleStatus {
 function moduleDoneLine(msg: { module: string; status?: string; reason?: string; error?: string }): string {
   const detail = msg.reason || msg.error;
   switch (msg.status) {
-    case 'skipped': return `⊘ ${msg.module}: skipped${detail ? ` — ${detail}` : ''}`;
-    case 'rate_limited': return `⏳ ${msg.module}: rate limited${detail ? ` — ${detail}` : ''}`;
+    case 'skipped': return `⊘ ${msg.module}: skipped${detail ? ` - ${detail}` : ''}`;
+    case 'rate_limited': return `⏳ ${msg.module}: rate limited${detail ? ` - ${detail}` : ''}`;
     case 'error': return `✗ ${msg.module}: ${detail || 'error'}`;
     default: return `✓ ${msg.module}`;
   }
@@ -185,7 +185,7 @@ export function App() {
 
     ws.onerror = () => {
       if (!done) {
-        setProgressLog(prev => [...prev, 'WebSocket unavailable — switching to polling…']);
+        setProgressLog(prev => [...prev, 'WebSocket unavailable - switching to polling...']);
       }
     };
 

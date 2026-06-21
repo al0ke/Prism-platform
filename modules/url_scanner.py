@@ -75,7 +75,7 @@ class URLScanner:
                 return result
 
         result["status"] = "timeout"
-        result["error"] = "Analysis timed out — try checking VirusTotal directly"
+        result["error"] = "Analysis timed out - try checking VirusTotal directly"
         url_id = base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
         result["permalink"] = f"https://www.virustotal.com/gui/url/{url_id}"
         return result

@@ -12,7 +12,7 @@ REPORT_TEMPLATE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>PRISM Report — {{ target }}</title>
+<title>PRISM Report - {{ target }}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap" rel="stylesheet"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
@@ -357,7 +357,7 @@ REPORT_TEMPLATE = r"""<!DOCTYPE html>
 {% endif %}
 {% endif %}
 
-<!-- Threat Intel — VirusTotal -->
+<!-- Threat Intel - VirusTotal -->
 {% if results.virustotal and not results.virustotal.error %}
 <div class="section">
   <div class="section-title">
@@ -427,8 +427,8 @@ REPORT_TEMPLATE = r"""<!DOCTYPE html>
       {% for svc in results.shodan.services %}
       <tr>
         <td style="font-family:ui-monospace,monospace;font-size:11px">{{ svc.port }}/{{ svc.transport }}</td>
-        <td>{{ svc.product or '—' }}</td>
-        <td style="color:var(--t3)">{{ svc.version or '—' }}</td>
+        <td>{{ svc.product or '-' }}</td>
+        <td style="color:var(--t3)">{{ svc.version or '-' }}</td>
       </tr>
       {% endfor %}
       </tbody>
@@ -596,7 +596,7 @@ PDF_REPORT_TEMPLATE = r"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8"/>
-<title>PRISM Report — {{ target }}</title>
+<title>PRISM Report - {{ target }}</title>
 <style>
   @page { size: A4; margin: 1.6cm 1.4cm; }
   body { font-family: 'DejaVuSans', Helvetica, Arial, sans-serif; font-size: 10pt; color: #1a1f2b; }

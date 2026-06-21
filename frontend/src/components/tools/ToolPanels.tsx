@@ -49,7 +49,7 @@ function RunBtn({ loading, label, onClick, disabled }: { loading: boolean; label
   return (
     <button className="btn-primary shrink-0 px-5" onClick={onClick} disabled={loading || disabled}>
       {loading && <Loader2 size={13} className="spin" />}
-      {loading ? 'Running…' : label}
+      {loading ? 'Running...' : label}
     </button>
   );
 }

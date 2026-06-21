@@ -103,7 +103,7 @@ def format_discord(payload: dict) -> dict:
         fields.append({"name": "Notable Findings", "value": "\n".join(findings), "inline": False})
 
     embed = {
-        "title": f"PRISM Scan — {target}",
+        "title": f"PRISM Scan - {target}",
         "color": color,
         "fields": fields,
         "footer": {"text": "PRISM OSINT Platform"},

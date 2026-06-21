@@ -104,7 +104,7 @@ class OpsecScorer:
         count = len(found)
         if count >= 20:
             self._deduct("identity_opsec", 20, "HIGH",
-                         f"Username found on {count} platforms — high digital footprint")
+                         f"Username found on {count} platforms - high digital footprint")
         elif count >= 10:
             self._deduct("identity_opsec", 13, "MEDIUM",
                          f"Username found on {count} platforms")
@@ -135,7 +135,7 @@ class OpsecScorer:
         emails = whois_result.get("emails", [])
         if emails:
             self._deduct("infrastructure", 8, "MEDIUM",
-                         f"WHOIS exposes {len(emails)} contact email(s) — registrar privacy not used")
+                         f"WHOIS exposes {len(emails)} contact email(s) - registrar privacy not used")
         org = whois_result.get("org", "")
         if org and org.lower() not in ("", "none", "n/a", "redacted for privacy"):
             self._deduct("infrastructure", 3, "INFO",
@@ -185,7 +185,7 @@ class OpsecScorer:
         has_spf = any("spf" in str(r).lower() for r in txt)
         if not has_spf and txt is not None:
             self._deduct("infrastructure", 5, "MEDIUM",
-                         "No SPF record found — domain may be vulnerable to email spoofing")
+                         "No SPF record found - domain may be vulnerable to email spoofing")
 
     def process_website(self, web_result: Dict) -> None:
         if not web_result or web_result.get("error"):
@@ -195,7 +195,7 @@ class OpsecScorer:
 
         if url.startswith("http://"):
             self._deduct("web_security", 8, "HIGH",
-                         "Site served over HTTP — no TLS encryption")
+                         "Site served over HTTP - no TLS encryption")
 
         missing_headers = []
         resp_headers_lower = {k.lower(): v for k, v in headers.items()}

@@ -1,7 +1,7 @@
 """Standard status vocabulary for module results.
 
 Several PRISM modules depend on third-party API keys (Shodan, VirusTotal,
-AbuseIPDB, Censys, …). When a key is absent or the provider rate-limits us,
+AbuseIPDB, Censys, ...). When a key is absent or the provider rate-limits us,
 the module should report a clear, machine-readable status instead of failing
 hard, so the dashboard can render a per-module badge.
 
@@ -13,16 +13,16 @@ are classified heuristically from their legacy ``error`` field by
 
 from typing import Any, Dict, Optional
 
-#: Module ran successfully and returned data.
+# Module ran successfully and returned data.
 OK = "ok"
-#: A prerequisite is missing (e.g. no API key configured) — not a failure.
+# A prerequisite is missing (e.g. no API key configured) - not a failure.
 SKIPPED = "skipped"
-#: The provider throttled the request (HTTP 429 / quota exhausted).
+# The provider throttled the request (HTTP 429 / quota exhausted).
 RATE_LIMITED = "rate_limited"
-#: A genuine error occurred while running the module.
+# A genuine error occurred while running the module.
 ERROR = "error"
 
-#: All valid statuses, in severity order.
+# All valid statuses, in severity order.
 ALL = (OK, SKIPPED, RATE_LIMITED, ERROR)
 
 # Substrings used to infer a status from a legacy free-text error message.

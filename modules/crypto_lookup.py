@@ -118,5 +118,5 @@ class CryptoLookup:
             return {
                 "address": address,
                 "type": "unknown",
-                "error": "Unrecognised address format. Supported: Bitcoin (1…/3…/bc1…), Ethereum (0x…)",
+                "error": "Unrecognised address format. Supported: Bitcoin (1.../3.../bc1...), Ethereum (0x...)",
             }

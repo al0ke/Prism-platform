@@ -340,7 +340,7 @@ export function Sidebar({ onScan, onLoadScan, onCompare, isRunning, isOpen, onCl
                           {h.target}
                         </span>
                         <span className="text-[8px] text-text-3">
-                          {h.status === 'completed' ? '✓' : h.status === 'running' ? '…' : '✗'}{' '}
+                          {h.status === 'completed' ? '✓' : h.status === 'running' ? '...' : '✗'}{' '}
                           {new Date(h.started_at).toLocaleDateString()}
                         </span>
                       </div>

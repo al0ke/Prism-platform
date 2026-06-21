@@ -157,10 +157,10 @@ export function ScanComparison({ scanIdA, scanIdB, onBack }: Props) {
                 <tr key={row.key} className={`border-t border-border-1 ${STATUS_STYLE[row.status]}`}>
                   <td className="px-3 py-1.5 font-mono font-medium">{row.key}</td>
                   <td className="px-3 py-1.5 font-mono break-all max-w-0">
-                    <span className="line-clamp-2">{row.valA ?? '—'}</span>
+                    <span className="line-clamp-2">{row.valA ?? '-'}</span>
                   </td>
                   <td className="px-3 py-1.5 font-mono break-all max-w-0">
-                    <span className="line-clamp-2">{row.valB ?? '—'}</span>
+                    <span className="line-clamp-2">{row.valB ?? '-'}</span>
                   </td>
                 </tr>
               ))}

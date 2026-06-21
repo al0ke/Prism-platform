@@ -4,12 +4,12 @@ import { LoadingWrapper } from '@/components/LoadingScreen';
 import { I18nProvider } from '@/lib/i18n';
 
 export const metadata: Metadata = {
-  title: 'PRISM — Open Source Intelligence Platform',
+  title: 'PRISM - Open Source Intelligence Platform',
   description: 'Professional OSINT toolkit for domain reconnaissance, email verification, username search, threat intelligence, and more. Powered by AI analysis.',
   keywords: ['OSINT', 'intelligence', 'reconnaissance', 'cybersecurity', 'threat intelligence', 'email verification', 'domain lookup', 'username search'],
   authors: [{ name: 'NovaCode37' }],
   openGraph: {
-    title: 'PRISM — Open Source Intelligence Platform',
+    title: 'PRISM - Open Source Intelligence Platform',
     description: 'Professional OSINT toolkit for domain reconnaissance, email verification, username search, threat intelligence, and more.',
     url: 'https://getprism.su',
     siteName: 'PRISM OSINT',
@@ -18,7 +18,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: 'summary',
-    title: 'PRISM — Open Source Intelligence Platform',
+    title: 'PRISM - Open Source Intelligence Platform',
     description: 'Professional OSINT toolkit with AI-powered analysis.',
   },
   robots: {

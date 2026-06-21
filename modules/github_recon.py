@@ -50,7 +50,7 @@ class GitHubRecon:
                 return result
             if r.status_code in (403, 429):
                 return annotate(result, RATE_LIMITED,
-                                "GitHub API rate limit reached — set GITHUB_TOKEN to raise it")
+                                "GitHub API rate limit reached - set GITHUB_TOKEN to raise it")
             if r.status_code != 200:
                 return annotate(result, ERROR, f"GitHub API returned {r.status_code}")
 

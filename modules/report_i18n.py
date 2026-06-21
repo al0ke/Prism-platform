@@ -37,7 +37,7 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         "geoip.coordinates": "Coordinates",
 
         "subdomains.title": "Subdomains ({n})",
-        "subdomains.more": "… and {n} more",
+        "subdomains.more": "... and {n} more",
 
         "accounts.title": "Accounts found ({n})",
         "accounts.site": "Site",
@@ -107,7 +107,7 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         "geoip.coordinates": "Координаты",
 
         "subdomains.title": "Поддомены ({n})",
-        "subdomains.more": "… и ещё {n}",
+        "subdomains.more": "... и ещё {n}",
 
         "accounts.title": "Найдено аккаунтов ({n})",
         "accounts.site": "Сайт",
@@ -177,7 +177,7 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         "geoip.coordinates": "Koordinaten",
 
         "subdomains.title": "Subdomains ({n})",
-        "subdomains.more": "… und {n} weitere",
+        "subdomains.more": "... und {n} weitere",
 
         "accounts.title": "Gefundene Konten ({n})",
         "accounts.site": "Seite",
