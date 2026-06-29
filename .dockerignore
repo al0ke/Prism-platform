@@ -10,9 +10,9 @@ frontend/.next
 frontend/out
 
 node_modules
-results
-scan_data
-module_cache
+/results
+/scan_data
+/module_cache
 
 .env
 .env.*

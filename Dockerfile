@@ -88,6 +88,9 @@ COPY --from=python-build /opt/venv /opt/venv
 COPY . .
 COPY --from=frontend-build /build/frontend/out /app/frontend/out
 
+# Bake demo scan data into the image (Render doesn't support compose volumes)
+COPY demo/scan_data/ /app/scan_data/
+
 RUN mkdir -p results scan_data module_cache
 
 EXPOSE 8080

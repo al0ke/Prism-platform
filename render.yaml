@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: prism-osint-demo
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    envVars:
+      - key: ALLOW_ANON_API
+        value: "true"
+      - key: PRISM_DEMO_MODE
+        value: "true"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: ALLOWED_ORIGINS
+        value: "*"
+      # Trusted hosts: leave unset so the app accepts any Host header.
+      # Render routes via *.onrender.com subdomain — no TRUSTED_HOSTS needed.
+    # Render exposes the container's port via its reverse proxy; the app
+    # listens on 8080 (Dockerfile CMD). Render auto-detects the port from
+    # the EXPOSE directive, but we set PORT to match for clarity.
